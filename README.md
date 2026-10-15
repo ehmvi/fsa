@@ -76,6 +76,25 @@ enough for it to show up.
 To run the end-to-end hosting test against any plugin:
 `FSA_TEST_CLAP=/path/to/plugin.clap cargo test hosts_plugin`.
 
+## LV2 plugins
+
+LV2 effects show up in the same **Add plugin…** browser (x86_64 Linux
+only: `lilv` 0.2 doesn't build where `c_char` is unsigned, e.g. aarch64).
+Search path: `$LV2_PATH`, `~/.lv2`, `/run/current-system/sw/lib/lv2`,
+`lib/lv2` in every `$NIX_PROFILES` entry, the home-manager profile and
+`/usr{,/local}/lib/lv2`.
+
+- Instruments are hidden; anything with audio in and out is listed.
+- Plugin UIs aren't hosted. Every plugin gets generic controls:
+  checkboxes for toggles, dropdowns for enumerations, sliders otherwise.
+- Control values are saved by port symbol. Plugins that keep internal
+  state beyond their controls (LV2 state extension) start fresh on load.
+- **Rescan** builds a new lilv world, so newly installed plugins appear
+  without a restart.
+
+To run the end-to-end LV2 test against any effect (find URIs with `lv2ls`):
+`FSA_TEST_LV2=<uri> cargo test hosts_lv2`.
+
 ## Settings
 
 Everything (input, channel, bypass, chain order and on/off state, EQ and
