@@ -36,7 +36,7 @@
         <dict>
           <key>CFBundleName</key><string>fsa</string>
           <key>CFBundleDisplayName</key><string>fsa</string>
-          <key>CFBundleIdentifier</key><string>io.github.anoscetia.fsa</string>
+          <key>CFBundleIdentifier</key><string>io.github.ehmvi.fsa</string>
           <key>CFBundleExecutable</key><string>fsa</string>
           <key>CFBundlePackageType</key><string>APPL</string>
           <key>CFBundleShortVersionString</key><string>${version}</string>
