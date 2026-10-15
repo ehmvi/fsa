@@ -1,28 +1,42 @@
-//! the gui: chain list on the left, the selected item's panel in the middle.
+//! the gui: chain list on the left, the selected item's panel in the middle,
+//! meters on the right.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
 use egui::{Color32, RichText};
 
 use crate::audio::{Backend, Ctrl, SAMPLE_RATE};
 use crate::config::{ChainEntry, Config, EqConfig};
 use crate::dsp::eq::{Eq, EqParams};
 use crate::dsp::gate::{Gate, GateParams};
-use crate::engine::{Command, EngineHandle, Slot, SlotState, Unit};
+use crate::engine::{Command, EngineHandle, Passthrough, Slot, SlotState, Unit};
+use crate::plugins::clap::{ClapPlugin, ClapUnit};
+use crate::plugins::scan::PluginInfo;
 use crate::shared::{InputChannel, Shared};
 use crate::ui::meter::Meter;
+use crate::ui::plugin_view::Browser;
 use crate::ui::{self, AMBER, GREEN};
 
 /// how long settings must stay unchanged before they are written to disk
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(800);
+/// how long to wait on exit for the audio thread to hand plugins back
+const TEARDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
     Eq,
     Gate,
+    Plugin {
+        plugin: Box<ClapPlugin>,
+        /// last saved plugin state, base64; refreshed when the plugin changes
+        state: Option<String>,
+    },
+    /// a configured plugin that failed to load; kept so the config survives
+    Missing(ChainEntry),
 }
 
 pub struct ChainItem {
@@ -32,10 +46,13 @@ pub struct ChainItem {
 }
 
 impl ChainItem {
-    fn name(&self) -> &str {
-        match self.kind {
-            ItemKind::Eq => "Equalizer",
-            ItemKind::Gate => "Noise gate",
+    fn name(&self) -> String {
+        match &self.kind {
+            ItemKind::Eq => "Equalizer".into(),
+            ItemKind::Gate => "Noise gate".into(),
+            ItemKind::Plugin { plugin, .. } => plugin.info.name.clone(),
+            ItemKind::Missing(ChainEntry::Clap { name, .. }) => format!("{name} (missing)"),
+            ItemKind::Missing(_) => "(missing)".into(),
         }
     }
 
@@ -45,11 +62,23 @@ impl ChainItem {
 
     fn to_entry(&self) -> ChainEntry {
         let enabled = self.enabled();
-        match self.kind {
+        match &self.kind {
             ItemKind::Eq => ChainEntry::Eq { enabled },
             ItemKind::Gate => ChainEntry::Gate { enabled },
+            ItemKind::Plugin { plugin, state } => ChainEntry::Clap {
+                enabled,
+                name: plugin.info.name.clone(),
+                id: plugin.info.id.clone(),
+                path: plugin.info.path.clone(),
+                state: state.clone(),
+            },
+            ItemKind::Missing(entry) => entry.clone(),
         }
     }
+}
+
+fn encode_state(plugin: &mut ClapPlugin) -> Option<String> {
+    plugin.save_state().map(|b| BASE64_STANDARD.encode(b))
 }
 
 /// everything built from the config before the audio thread starts
@@ -70,15 +99,48 @@ impl Setup {
         let mut chain = Vec::new();
         let mut slots = Vec::new();
         for (id, entry) in config.chain.iter().enumerate() {
-            let (kind, enabled, unit): (_, _, Box<dyn Unit>) = match *entry {
+            let (kind, enabled, unit): (_, _, Box<dyn Unit>) = match entry {
                 ChainEntry::Eq { enabled } => {
-                    (ItemKind::Eq, enabled, Box::new(Eq::new(eq.clone(), fs)))
+                    (ItemKind::Eq, *enabled, Box::new(Eq::new(eq.clone(), fs)))
                 }
                 ChainEntry::Gate { enabled } => (
                     ItemKind::Gate,
-                    enabled,
+                    *enabled,
                     Box::new(Gate::new(gate.clone(), fs)),
                 ),
+                ChainEntry::Clap {
+                    enabled,
+                    name,
+                    id,
+                    path,
+                    state,
+                } => {
+                    let info = PluginInfo {
+                        path: path.clone(),
+                        id: id.clone(),
+                        name: name.clone(),
+                        vendor: String::new(),
+                    };
+                    let bytes = state.as_ref().and_then(|s| BASE64_STANDARD.decode(s).ok());
+                    match ClapPlugin::load(&info, bytes.as_deref()) {
+                        Ok((plugin, unit)) => (
+                            ItemKind::Plugin {
+                                plugin: Box::new(plugin),
+                                state: state.clone(),
+                            },
+                            *enabled,
+                            Box::new(unit),
+                        ),
+                        Err(e) => {
+                            log::error!("{name}: {e:#}");
+                            (
+                                ItemKind::Missing(entry.clone()),
+                                false,
+                                Box::new(Passthrough),
+                            )
+                        }
+                    }
+                }
             };
             let item = ChainItem {
                 id: id as u32,
@@ -97,6 +159,80 @@ impl Setup {
     }
 }
 
+enum RowAction {
+    Select,
+    Move(usize, i32),
+    Remove(usize),
+    ToggleEditor(usize),
+}
+
+/// one row of the chain list
+fn chain_row(
+    ui: &mut egui::Ui,
+    item: &ChainItem,
+    i: usize,
+    len: usize,
+    selected: bool,
+) -> Option<RowAction> {
+    let mut action = None;
+    // buttons first (right to left) so the name truncates in the space that's left
+    let size = egui::vec2(ui.available_width(), 26.0);
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if matches!(item.kind, ItemKind::Plugin { .. } | ItemKind::Missing(_))
+                && ui.button("🗙").on_hover_text("remove from chain").clicked()
+            {
+                action = Some(RowAction::Remove(i));
+            }
+            if ui
+                .add_enabled(i + 1 < len, egui::Button::new("⏷"))
+                .on_hover_text("move down")
+                .clicked()
+            {
+                action = Some(RowAction::Move(i, 1));
+            }
+            if ui
+                .add_enabled(i > 0, egui::Button::new("⏶"))
+                .on_hover_text("move up")
+                .clicked()
+            {
+                action = Some(RowAction::Move(i, -1));
+            }
+            if let ItemKind::Plugin { plugin, .. } = &item.kind
+                && plugin.has_editor()
+            {
+                let text = if plugin.editor_open() { "Hide" } else { "Edit" };
+                if ui
+                    .button(text)
+                    .on_hover_text("plugin editor window")
+                    .clicked()
+                {
+                    action = Some(RowAction::ToggleEditor(i));
+                }
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let missing = matches!(item.kind, ItemKind::Missing(_));
+                if ui
+                    .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
+                    .inner
+                {
+                    item.state.enabled.store(!item.enabled(), Ordering::Relaxed);
+                }
+                let label = RichText::new(item.name()).size(15.0);
+                let label = if item.enabled() { label } else { label.weak() };
+                let label = if missing { label.color(AMBER) } else { label };
+                let resp = ui.add(egui::Button::selectable(selected, label).truncate());
+                if resp.on_hover_text(item.name()).clicked() {
+                    action = Some(RowAction::Select);
+                }
+            });
+        },
+    );
+    action
+}
+
 pub struct App {
     shared: Arc<Shared>,
     backend: Backend,
@@ -104,8 +240,13 @@ pub struct App {
     eq: Arc<EqParams>,
     gate: Arc<GateParams>,
     chain: Vec<ChainItem>,
+    next_id: u32,
+    /// plugins removed from the chain, waiting for the audio thread to let go
+    removing: Vec<(u32, Box<ClapPlugin>)>,
+    browser: Browser,
     input: Option<String>,
     selected: Option<u32>,
+    error: Option<String>,
     meter_in: Meter,
     meter_out: Meter,
     config_path: PathBuf,
@@ -130,6 +271,11 @@ impl App {
             slots: _,
         } = setup;
         let selected = chain.first().map(|c| c.id);
+        let next_id = chain.iter().map(|c| c.id + 1).max().unwrap_or(0);
+        let error = chain
+            .iter()
+            .any(|c| matches!(c.kind, ItemKind::Missing(_)))
+            .then(|| "some plugins could not be loaded, see the log".to_string());
         Self {
             shared,
             backend,
@@ -137,8 +283,12 @@ impl App {
             eq,
             gate,
             chain,
+            next_id,
+            removing: Vec::new(),
+            browser: Browser::default(),
             input: config.input.clone(),
             selected,
+            error,
             meter_in: Meter::default(),
             meter_out: Meter::default(),
             config_path,
@@ -188,7 +338,75 @@ impl App {
         let item = self.chain.remove(from);
         let id = item.id;
         self.chain.insert(to, item);
-        self.engine.send(Command::Move { id, to });
+        let after = to.checked_sub(1).map(|i| self.chain[i].id);
+        self.engine.send(Command::Move { id, after });
+    }
+
+    fn add_plugin(&mut self, info: &PluginInfo) {
+        match ClapPlugin::load(info, None) {
+            Ok((mut plugin, unit)) => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let state = SlotState::new(true);
+                let fs = SAMPLE_RATE as f32;
+                self.engine.send(Command::Insert(Slot::new(
+                    id,
+                    Box::new(unit),
+                    state.clone(),
+                    fs,
+                )));
+                let saved = encode_state(&mut plugin);
+                self.chain.push(ChainItem {
+                    id,
+                    kind: ItemKind::Plugin {
+                        plugin: Box::new(plugin),
+                        state: saved,
+                    },
+                    state,
+                });
+                self.selected = Some(id);
+            }
+            Err(e) => self.error = Some(format!("{}: {e:#}", info.name)),
+        }
+    }
+
+    fn remove_item(&mut self, index: usize) {
+        let item = self.chain.remove(index);
+        self.engine.send(Command::Remove(item.id));
+        if let ItemKind::Plugin { mut plugin, .. } = item.kind {
+            plugin.close_editor();
+            self.removing.push((item.id, plugin));
+        }
+        if self.selected == Some(item.id) {
+            self.selected = self.chain.get(index.saturating_sub(1)).map(|c| c.id);
+        }
+    }
+
+    /// deactivates plugins whose audio side came back from the engine
+    fn collect_garbage(&mut self) {
+        for slot in self.engine.collect_garbage() {
+            let Some(pos) = self.removing.iter().position(|(id, _)| *id == slot.id) else {
+                continue;
+            };
+            let (_, plugin) = self.removing.swap_remove(pos);
+            if let Ok(unit) = slot.unit.into_any().downcast::<ClapUnit>() {
+                plugin.deactivate(*unit);
+            }
+        }
+    }
+
+    /// main-thread plugin housekeeping. returns true if an editor is open.
+    fn poll_plugins(&mut self) -> bool {
+        let mut editor_open = false;
+        for item in &mut self.chain {
+            if let ItemKind::Plugin { plugin, state } = &mut item.kind {
+                if plugin.poll() {
+                    *state = encode_state(plugin);
+                }
+                editor_open |= plugin.editor_open();
+            }
+        }
+        editor_open
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -280,56 +498,119 @@ impl App {
                 .weak(),
         );
         ui.add_space(6.0);
-        let mut action: Option<(usize, i32)> = None;
+        let mut action = None;
         let len = self.chain.len();
-        for (i, item) in self.chain.iter().enumerate() {
-            let selected = self.selected == Some(item.id);
-            let frame = egui::Frame::group(ui.style())
-                .fill(if selected {
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-                } else {
-                    Color32::TRANSPARENT
-                })
-                .inner_margin(6.0);
-            frame.show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    if ui::on_off(ui, item.enabled()) {
-                        item.state.enabled.store(!item.enabled(), Ordering::Relaxed);
-                    }
-                    let label = RichText::new(item.name()).size(15.0);
-                    let label = if item.enabled() { label } else { label.weak() };
-                    if ui.selectable_label(selected, label).clicked() {
-                        self.selected = Some(item.id);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(i + 1 < len, egui::Button::new("⏷"))
-                            .on_hover_text("move down")
-                            .clicked()
-                        {
-                            action = Some((i, 1));
-                        }
-                        if ui
-                            .add_enabled(i > 0, egui::Button::new("⏶"))
-                            .on_hover_text("move up")
-                            .clicked()
-                        {
-                            action = Some((i, -1));
-                        }
-                    });
-                });
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height() - 40.0)
+            .show(ui, |ui| {
+                for (i, item) in self.chain.iter().enumerate() {
+                    let selected = self.selected == Some(item.id);
+                    let fill = if selected {
+                        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    egui::Frame::group(ui.style())
+                        .fill(fill)
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if let Some(a) = chain_row(ui, item, i, len, selected) {
+                                match a {
+                                    RowAction::Select => self.selected = Some(item.id),
+                                    other => action = Some(other),
+                                }
+                            }
+                        });
+                }
             });
+        ui.add_space(6.0);
+        if ui.button("➕ Add plugin…").clicked() {
+            self.browser.open = true;
         }
-        if let Some((i, dir)) = action {
-            self.move_item(i, (i as i32 + dir) as usize);
+        match action {
+            Some(RowAction::Move(i, dir)) => self.move_item(i, (i as i32 + dir) as usize),
+            Some(RowAction::Remove(i)) => self.remove_item(i),
+            Some(RowAction::ToggleEditor(i)) => {
+                if let ItemKind::Plugin { plugin, .. } = &mut self.chain[i].kind {
+                    if plugin.editor_open() {
+                        plugin.close_editor();
+                    } else if let Err(e) = plugin.open_editor() {
+                        self.error = Some(format!("{}: {e:#}", plugin.info.name));
+                    }
+                }
+            }
+            Some(RowAction::Select) | None => {}
+        }
+    }
+
+    fn selected_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(index) = self.chain.iter().position(|c| Some(c.id) == self.selected) else {
+            ui.label("select an item in the chain");
+            return;
+        };
+        let item = &mut self.chain[index];
+        ui.horizontal(|ui| {
+            ui.heading(item.name());
+            if !item.enabled() {
+                ui.label(RichText::new("(off)").weak());
+            }
+        });
+        ui.separator();
+        match &mut item.kind {
+            ItemKind::Eq => {
+                egui::ScrollArea::vertical().show(ui, |ui| ui::eq_view::show(ui, &self.eq));
+            }
+            ItemKind::Gate => {
+                ui::gate_view::show(ui, &self.gate);
+            }
+            ItemKind::Plugin { plugin, .. } => {
+                if let Err(e) = ui::plugin_view::show(ui, plugin) {
+                    self.error = Some(format!("{}: {e:#}", plugin.info.name));
+                }
+            }
+            ItemKind::Missing(entry) => {
+                ui.label("this plugin could not be loaded and is bypassed.");
+                if let ChainEntry::Clap { id, path, .. } = entry {
+                    ui.label(
+                        RichText::new(format!("{id}\n{}", path.display()))
+                            .monospace()
+                            .small(),
+                    );
+                }
+                ui.label("its settings are kept in the config until you remove it.");
+            }
+        }
+    }
+
+    /// hands every plugin back to the main thread and deactivates it
+    fn teardown_plugins(&mut self) {
+        for i in (0..self.chain.len()).rev() {
+            if matches!(self.chain[i].kind, ItemKind::Plugin { .. }) {
+                self.remove_item(i);
+            }
+        }
+        let deadline = Instant::now() + TEARDOWN_TIMEOUT;
+        while !self.removing.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            self.collect_garbage();
+        }
+        if !self.removing.is_empty() {
+            // the audio thread isn't running; clack leaks rather than destroying
+            // an instance whose processor is still alive, which is fine at exit
+            log::warn!(
+                "{} plugin(s) not returned by the audio thread",
+                self.removing.len()
+            );
         }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        drop(self.engine.collect_garbage());
+        self.collect_garbage();
+        self.browser.run_pending_scan();
+        let editor_open = self.poll_plugins();
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
@@ -347,6 +628,16 @@ impl eframe::App for App {
                             .color(AMBER),
                     );
                 }
+                if let Some(err) = &self.error {
+                    ui.label(
+                        RichText::new(err)
+                            .small()
+                            .color(Color32::from_rgb(0xe0, 0x5a, 0x5a)),
+                    );
+                    if ui.small_button("🗙").clicked() {
+                        self.error = None;
+                    }
+                }
             });
         });
         self.meter_in.update(self.shared.in_peak.take());
@@ -363,41 +654,32 @@ impl eframe::App for App {
             });
         egui::Panel::left("chain")
             .resizable(true)
-            .default_size(260.0)
+            .default_size(300.0)
             .show(ui, |ui| {
                 ui.add_space(6.0);
                 self.chain_list(ui);
             });
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            let Some(item) = self.chain.iter().find(|c| Some(c.id) == self.selected) else {
-                ui.label("select an item in the chain");
-                return;
-            };
-            let (kind, name, enabled) = (item.kind, item.name().to_string(), item.enabled());
-            ui.horizontal(|ui| {
-                ui.heading(name);
-                if !enabled {
-                    ui.label(RichText::new("(off)").weak());
-                }
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| match kind {
-                ItemKind::Eq => {
-                    ui::eq_view::show(ui, &self.eq);
-                }
-                ItemKind::Gate => {
-                    ui::gate_view::show(ui, &self.gate);
-                }
-            });
-        });
+        egui::CentralPanel::default_margins().show(ui, |ui| self.selected_panel(ui));
+
+        if let Some(info) = self.browser.show(ui.ctx()) {
+            self.add_plugin(&info);
+        }
 
         self.autosave();
-        // meters and the gate indicator need regular repaints
-        ui.ctx().request_repaint_after(Duration::from_millis(33));
+        // meters, the gate indicator and plugin timers need regular repaints
+        let period = if editor_open { 16 } else { 33 };
+        ui.ctx()
+            .request_repaint_after(Duration::from_millis(period));
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        for item in &mut self.chain {
+            if let ItemKind::Plugin { plugin, state } = &mut item.kind {
+                *state = encode_state(plugin);
+            }
+        }
         let snap = self.snapshot();
         self.save(snap);
+        self.teardown_plugins();
     }
 }

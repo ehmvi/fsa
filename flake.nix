@@ -41,7 +41,10 @@
             rustPlatform.bindgenHook
             makeWrapper
           ];
-          buildInputs = [ pkgs.pipewire ];
+          buildInputs = with pkgs; [
+            pipewire
+            libx11 # plugin editor host windows
+          ];
           postFixup = ''
             wrapProgram $out/bin/fsa \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}

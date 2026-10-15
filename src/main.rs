@@ -3,6 +3,7 @@ mod audio;
 mod config;
 mod dsp;
 mod engine;
+mod plugins;
 mod shared;
 mod ui;
 

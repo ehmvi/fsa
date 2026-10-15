@@ -41,8 +41,22 @@ impl Default for Config {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ChainEntry {
-    Eq { enabled: bool },
-    Gate { enabled: bool },
+    Eq {
+        enabled: bool,
+    },
+    Gate {
+        enabled: bool,
+    },
+    Clap {
+        enabled: bool,
+        /// display name, also used if the plugin goes missing
+        name: String,
+        id: String,
+        path: PathBuf,
+        /// plugin state blob, base64
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,6 +196,7 @@ impl Config {
         self.chain.retain(|e| match e {
             ChainEntry::Eq { .. } => !std::mem::replace(&mut seen_eq, true),
             ChainEntry::Gate { .. } => !std::mem::replace(&mut seen_gate, true),
+            ChainEntry::Clap { .. } => true,
         });
         if !seen_eq {
             self.chain.insert(0, ChainEntry::Eq { enabled: true });
@@ -213,6 +228,13 @@ mod tests {
         c.input = Some("alsa_input.usb-Yamaha_Steinberg_UR22C".into());
         c.input_channel = InputChannel::Right;
         c.chain.reverse();
+        c.chain.push(ChainEntry::Clap {
+            enabled: false,
+            name: "Some Comp".into(),
+            id: "org.example.comp".into(),
+            path: "/run/current-system/sw/lib/clap/comp.clap".into(),
+            state: Some("AAEC".into()),
+        });
         c.eq.bands[2].gain = -3.5;
         let text = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&text).unwrap();

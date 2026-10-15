@@ -6,6 +6,7 @@
 //! the chain are sent back through a second ring so they are dropped (and
 //! deallocated) on the gui thread, never on the audio thread.
 
+use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,10 +19,14 @@ use crate::shared::Shared;
 pub const MAX_SLOTS: usize = 32;
 
 /// anything that can sit in the chain. processes mono audio in place.
-pub trait Unit: Send {
+pub trait Unit: Send + 'static {
     fn process(&mut self, buf: &mut [f32]);
     /// clear internal state; called when a slot is switched back on
     fn reset(&mut self);
+    /// called on the audio thread right before the slot leaves the chain
+    fn stop(&mut self) {}
+    /// lets the gui recover the concrete type of a returned slot
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
 impl Unit for Eq {
@@ -32,6 +37,10 @@ impl Unit for Eq {
     fn reset(&mut self) {
         Eq::reset(self)
     }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+        self
+    }
 }
 
 impl Unit for Gate {
@@ -41,6 +50,23 @@ impl Unit for Gate {
 
     fn reset(&mut self) {
         Gate::reset(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+        self
+    }
+}
+
+/// stand-in for a plugin that failed to load, keeps its place in the chain
+pub struct Passthrough;
+
+impl Unit for Passthrough {
+    fn process(&mut self, _buf: &mut [f32]) {}
+
+    fn reset(&mut self) {}
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+        self
     }
 }
 
@@ -84,8 +110,9 @@ pub enum Command {
     Insert(Slot),
     /// fade the slot out, then hand it back for dropping
     Remove(u32),
-    /// move slot `id` to position `to`
-    Move { id: u32, to: usize },
+    /// move slot `id` right after slot `after` (`None` = to the front).
+    /// relative, so slots still fading out after removal don't shift it.
+    Move { id: u32, after: Option<u32> },
 }
 
 /// gui side of the engine
@@ -151,6 +178,8 @@ impl Engine {
                     if self.slots.len() < self.slots.capacity() {
                         self.slots.push(slot);
                     } else {
+                        let mut slot = slot;
+                        slot.unit.stop();
                         let _ = self.garbage.push(slot);
                     }
                 }
@@ -159,11 +188,18 @@ impl Engine {
                         s.removing = true;
                     }
                 }
-                Command::Move { id, to } => {
+                Command::Move { id, after } => {
                     if let Some(from) = self.slots.iter().position(|s| s.id == id) {
                         // remove + insert within capacity never reallocates
                         let slot = self.slots.remove(from);
-                        let to = to.min(self.slots.len());
+                        let to = match after {
+                            None => 0,
+                            Some(a) => self
+                                .slots
+                                .iter()
+                                .position(|s| s.id == a)
+                                .map_or(self.slots.len(), |p| p + 1),
+                        };
                         self.slots.insert(to, slot);
                     }
                 }
@@ -176,7 +212,8 @@ impl Engine {
             .position(|s| s.removing && s.fade.is_silent())
             && self.garbage.slots() > 0
         {
-            let slot = self.slots.remove(pos);
+            let mut slot = self.slots.remove(pos);
+            slot.unit.stop();
             let _ = self.garbage.push(slot);
         }
     }
@@ -221,6 +258,9 @@ mod tests {
             buf.iter_mut().for_each(|s| *s *= self.0);
         }
         fn reset(&mut self) {}
+        fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+            self
+        }
     }
 
     fn engine_with(units: Vec<(u32, f32)>) -> (Engine, EngineHandle, Vec<Arc<SlotState>>) {
@@ -266,9 +306,16 @@ mod tests {
     #[test]
     fn move_reorders() {
         let (mut e, mut h, _s) = engine_with(vec![(1, 1.0), (2, 1.0), (3, 1.0)]);
-        h.send(Command::Move { id: 3, to: 0 });
+        h.send(Command::Move { id: 3, after: None });
         run(&mut e, 1);
         let ids: Vec<_> = e.slots.iter().map(|s| s.id).collect();
         assert_eq!(ids, [3, 1, 2]);
+        h.send(Command::Move {
+            id: 3,
+            after: Some(2),
+        });
+        run(&mut e, 1);
+        let ids: Vec<_> = e.slots.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [1, 2, 3]);
     }
 }

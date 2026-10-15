@@ -342,7 +342,7 @@ fn capture_process(stream: &pw::stream::Stream, d: &mut CaptureData) {
     // interleaved stereo f32 -> mono
     let channel = d.shared.input_channel();
     let frames = (bytes.len() / 8).min(MAX_BLOCK);
-    for (i, frame) in bytes.chunks_exact(8).take(frames).enumerate() {
+    for (i, frame) in bytes.as_chunks::<8>().0.iter().take(frames).enumerate() {
         let l = f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]);
         let r = f32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
         d.input[i] = match channel {
@@ -385,7 +385,7 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
     if !d.priming {
         if let Ok(chunk) = d.consumer.read_chunk(avail.min(n)) {
             let (a, b) = chunk.as_slices();
-            for (dst, s) in out.chunks_exact_mut(4).zip(a.iter().chain(b)) {
+            for (dst, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(a.iter().chain(b)) {
                 dst.copy_from_slice(&s.to_le_bytes());
             }
             written = chunk.len();
@@ -397,10 +397,10 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
         }
         // latency crept up (e.g. after a period without consumers): drop the excess
         let left = d.consumer.slots();
-        if left > n + 2 * MARGIN {
-            if let Ok(chunk) = d.consumer.read_chunk(left - MARGIN) {
-                chunk.commit_all();
-            }
+        if left > n + 2 * MARGIN
+            && let Ok(chunk) = d.consumer.read_chunk(left - MARGIN)
+        {
+            chunk.commit_all();
         }
     }
     out[written * 4..].fill(0);
