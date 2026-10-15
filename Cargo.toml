@@ -1,0 +1,27 @@
+[package]
+name = "fsa"
+version = "0.1.0"
+edition = "2024"
+description = "small real-time microphone processor for pipewire"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+rtrb = "0.4"
+eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+clack-host = "0.2"
+clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "gui", "log", "params", "state", "timer", "posix-fd"] }
+base64 = "0.23"
+libc = "0.2"
+nnnoiseless = { version = "0.5", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.10", features = ["v0_3_49"] }
+
+[profile.release]
+debug = 1
