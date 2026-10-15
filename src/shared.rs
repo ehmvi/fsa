@@ -2,7 +2,7 @@
 //! the audio thread only ever touches atomics here.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::audio::Device;
 
@@ -35,6 +35,8 @@ impl InputChannel {
 
 #[derive(Default)]
 pub struct Shared {
+    /// global bypass: output = input (crossfaded)
+    pub bypass: AtomicBool,
     /// which channel of the (stereo) capture to use, see `InputChannel`
     pub input_channel: AtomicU8,
     /// playback underruns, for diagnostics

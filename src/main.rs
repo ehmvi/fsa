@@ -1,12 +1,19 @@
+mod app;
 mod audio;
+mod dsp;
 mod engine;
 mod shared;
+mod ui;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 
+use crate::app::{App, ChainItem, ItemKind};
+use crate::dsp::eq::{DEFAULT_BANDS, Eq, EqParams};
+use crate::dsp::gate::{Gate, GateParams, GateSettings};
+use crate::engine::{Engine, Slot, SlotState};
 use crate::shared::{InputChannel, Shared};
 
 fn main() -> anyhow::Result<()> {
@@ -34,7 +41,33 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let _backend = audio::Backend::start(shared.clone(), engine::Engine::new(), input)?;
+    let fs = audio::SAMPLE_RATE as f32;
+    let eq = Arc::new(EqParams::new(&DEFAULT_BANDS));
+    let gate = Arc::new(GateParams::new(&GateSettings::default()));
+    let chain = vec![
+        ChainItem {
+            id: 0,
+            kind: ItemKind::Eq,
+            state: SlotState::new(true),
+        },
+        ChainItem {
+            id: 1,
+            kind: ItemKind::Gate,
+            state: SlotState::new(true),
+        },
+    ];
+    let slots = chain
+        .iter()
+        .map(|item| {
+            let unit: Box<dyn engine::Unit> = match item.kind {
+                ItemKind::Eq => Box::new(Eq::new(eq.clone(), fs)),
+                ItemKind::Gate => Box::new(Gate::new(gate.clone(), fs)),
+            };
+            Slot::new(item.id, unit, item.state.clone(), fs)
+        })
+        .collect();
+    let (engine, engine_handle) = Engine::new(shared.clone(), slots, fs);
+    let backend = audio::Backend::start(shared.clone(), engine, input.clone())?;
 
     if list {
         std::thread::sleep(Duration::from_millis(500));
@@ -44,11 +77,28 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    log::info!(
-        "virtual source \"{}\" is up, ctrl+c to quit",
-        audio::SOURCE_DESCRIPTION
-    );
-    loop {
-        std::thread::park();
-    }
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_app_id("fsa")
+            .with_title("fsa – mic processor")
+            .with_inner_size([900.0, 620.0])
+            .with_min_inner_size([640.0, 420.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "fsa",
+        options,
+        Box::new(move |_cc| {
+            Ok(Box::new(App::new(
+                shared,
+                backend,
+                engine_handle,
+                eq,
+                gate,
+                chain,
+                input,
+            )))
+        }),
+    )
+    .map_err(|e| anyhow!("gui: {e}"))
 }

@@ -10,6 +10,8 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 rtrb = "0.4"
+eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+egui = "0.36"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.10", features = ["v0_3_49"] }

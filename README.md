@@ -9,7 +9,7 @@ called **Mic (processed)** that Discord (or anything else) can select.
 ```sh
 nix develop          # rust toolchain, pipewire, libclang, wayland/gl libs
 cargo run --release -- --list               # show capture sources (node.name)
-cargo run --release -- --input <node.name>  # start processing
+cargo run --release -- --input <node.name>  # start the gui (input can also be picked there)
 
 nix build            # or: nix run
 ```

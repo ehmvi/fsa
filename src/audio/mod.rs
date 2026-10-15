@@ -19,9 +19,11 @@ pub const QUANTUM: u32 = 256;
 pub const MAX_BLOCK: usize = 8192;
 
 /// node.name of the virtual source
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const SOURCE_NODE_NAME: &str = "fsa.processed";
 /// node.description of the virtual source, what discord shows
 pub const SOURCE_DESCRIPTION: &str = "Mic (processed)";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const CAPTURE_NODE_NAME: &str = "fsa.capture";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +34,7 @@ pub struct Device {
     pub description: String,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum Ctrl {
     /// switch the capture to another source (`None` = session default)
     SetInput(Option<String>),
