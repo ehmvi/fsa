@@ -19,6 +19,8 @@ clack-extensions = { version = "0.2", features = ["clack-host", "audio-ports", "
 base64 = "0.23"
 libc = "0.2"
 nnnoiseless = { version = "0.5", default-features = false }
+# already in the tree through nnnoiseless; used by the eq analyzer
+realfft = "3.5"
 
 # lilv 0.2 doesn't build where c_char is unsigned (aarch64 linux)
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]

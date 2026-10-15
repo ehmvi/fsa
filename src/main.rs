@@ -91,6 +91,11 @@ fn main() -> anyhow::Result<()> {
             .with_title("fsa – mic processor")
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([680.0, 440.0]),
+        // repaint is already timed (30/60 hz); vsync blocks when hidden on wayland
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(

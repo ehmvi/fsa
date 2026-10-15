@@ -110,7 +110,20 @@ quantum is 256 frames at 48 kHz.
   works on 10 ms frames, so it adds a fixed 10 ms of latency. Note:
   nnnoiseless sets up its FFT plans lazily, so the first denoised frame
   allocates once on the audio thread; nothing allocates after that.
-- **Equalizer**: high-pass, low shelf, two peaks, high shelf.
+- **Equalizer** (modelled on FabFilter Pro-Q), zero latency:
+  - up to 24 bands: bell, low/high shelf, tilt shelf, low/high cut
+    (6–96 dB/oct), notch, band pass and all pass;
+  - analog-matched filters, so bells and shelves keep their shape near
+    20 kHz instead of squashing like textbook (bilinear) biquads;
+  - dynamic EQ per band (threshold, range, attack, release), e.g. for
+    de-essing;
+  - band solo, output gain, undo/redo;
+  - a pre/post spectrum analyzer behind the curve.
+
+  On the graph: double-click to add a band (cuts near the edges), drag a
+  node (shift for fine control), scroll over it for Q, double-click it to
+  bypass it, right-click for its menu, Delete to remove it, Cmd/Ctrl+Z to
+  undo. Configs from the old fixed 5-band EQ are converted on load.
 - **Noise gate** with hysteresis, hold and range.
 
 Every chain item crossfades over 10 ms when switched on or off.

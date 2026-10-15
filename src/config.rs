@@ -7,7 +7,8 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::denoise::DenoiseSettings;
-use crate::dsp::eq::{BANDS, Band, DEFAULT_BANDS};
+use crate::dsp::eq::{Band, Dynamics, MAX_BANDS, default_bands};
+use crate::dsp::filter::Shape;
 use crate::dsp::gate::GateSettings;
 use crate::shared::InputChannel;
 
@@ -83,51 +84,128 @@ pub enum ChainEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BandConfig {
     pub on: bool,
+    /// missing in configs from the fixed 5-band eq, see `EqConfig::to_bands`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
+    #[serde(default = "default_slope")]
+    pub slope: u8,
     pub freq: f32,
     pub gain: f32,
     pub q: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamics: Option<DynamicsConfig>,
+}
+
+fn default_slope() -> u8 {
+    12
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DynamicsConfig {
+    pub on: bool,
+    pub threshold: f32,
+    pub range: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
 }
 
 impl From<Band> for BandConfig {
     fn from(b: Band) -> Self {
+        let d = b.dynamics;
         Self {
             on: b.on,
+            shape: Some(b.shape),
+            slope: b.slope,
             freq: b.freq,
             gain: b.gain,
             q: b.q,
+            // only written once dynamics were touched
+            dynamics: (d != Dynamics::default()).then_some(DynamicsConfig {
+                on: d.on,
+                threshold: d.threshold,
+                range: d.range,
+                attack_ms: d.attack_ms,
+                release_ms: d.release_ms,
+            }),
         }
     }
 }
 
-impl From<BandConfig> for Band {
-    fn from(b: BandConfig) -> Self {
-        Self {
-            on: b.on,
-            freq: b.freq.clamp(20.0, 20_000.0),
-            gain: b.gain.clamp(-24.0, 24.0),
-            q: b.q.clamp(0.1, 10.0),
+impl BandConfig {
+    fn to_band(self, shape: Shape) -> Band {
+        Band {
+            on: self.on,
+            shape,
+            slope: self.slope,
+            freq: self.freq,
+            gain: self.gain,
+            q: self.q,
+            dynamics: self.dynamics.map_or_else(Dynamics::default, |d| Dynamics {
+                on: d.on,
+                threshold: d.threshold,
+                range: d.range,
+                attack_ms: d.attack_ms,
+                release_ms: d.release_ms,
+            }),
         }
+        .clamped()
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyzerMode {
+    Off,
+    Pre,
+    Post,
+    #[default]
+    PrePost,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EqConfig {
-    /// high-pass, low shelf, peak 1, peak 2, high shelf
+    pub output_gain: f32,
+    pub analyzer: AnalyzerMode,
+    /// +- db shown by the response graph
+    pub display_range: f32,
     pub bands: Vec<BandConfig>,
 }
 
 impl Default for EqConfig {
     fn default() -> Self {
         Self {
-            bands: DEFAULT_BANDS.iter().map(|&b| b.into()).collect(),
+            output_gain: 0.0,
+            analyzer: AnalyzerMode::default(),
+            display_range: 12.0,
+            bands: default_bands().into_iter().map(Into::into).collect(),
         }
     }
 }
 
 impl EqConfig {
-    pub fn to_bands(&self) -> [Band; BANDS] {
-        std::array::from_fn(|i| self.bands.get(i).map_or(DEFAULT_BANDS[i], |&b| b.into()))
+    pub fn to_bands(&self) -> Vec<Band> {
+        // the old eq had fixed bands: high-pass, low shelf, two peaks, high
+        // shelf. flat ones did nothing and are dropped.
+        const LEGACY: [Shape; 5] = [
+            Shape::LowCut,
+            Shape::LowShelf,
+            Shape::Bell,
+            Shape::Bell,
+            Shape::HighShelf,
+        ];
+        self.bands
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| match b.shape {
+                Some(shape) => Some(b.to_band(shape)),
+                None => {
+                    let shape = LEGACY.get(i).copied().unwrap_or_default();
+                    (shape == Shape::LowCut || b.gain.abs() >= 0.05).then(|| b.to_band(shape))
+                }
+            })
+            .take(MAX_BANDS)
+            .collect()
     }
 }
 
@@ -296,7 +374,10 @@ mod tests {
             path: "/run/current-system/sw/lib/clap/comp.clap".into(),
             state: Some("AAEC".into()),
         });
-        c.eq.bands[2].gain = -3.5;
+        c.eq.bands.push(Band::new(Shape::Bell, 3000.0, -3.5).into());
+        let mut dynamic = Band::new(Shape::HighShelf, 6000.0, 2.0);
+        dynamic.dynamics.on = true;
+        c.eq.bands.push(dynamic.into());
         let text = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(c, back);
@@ -318,6 +399,35 @@ mod tests {
                 ChainEntry::Gate { enabled: false },
             ]
         );
+    }
+
+    #[test]
+    fn old_fixed_band_eq_is_migrated() {
+        let c: Config = toml::from_str(
+            r#"
+            [eq]
+            bands = [
+                { on = true, freq = 90.0, gain = 0.0, q = 0.8 },
+                { on = true, freq = 150.0, gain = 0.0, q = 0.707 },
+                { on = false, freq = 400.0, gain = -2.0, q = 1.0 },
+                { on = true, freq = 3000.0, gain = 0.0, q = 1.0 },
+                { on = true, freq = 8000.0, gain = 1.5, q = 0.707 },
+            ]
+            "#,
+        )
+        .unwrap();
+        let bands = c.eq.to_bands();
+        let shapes: Vec<_> = bands.iter().map(|b| (b.shape, b.on, b.freq)).collect();
+        assert_eq!(
+            shapes,
+            [
+                (Shape::LowCut, true, 90.0),
+                (Shape::Bell, false, 400.0),
+                (Shape::HighShelf, true, 8000.0),
+            ]
+        );
+        assert_eq!(bands[0].slope, 12);
+        assert_eq!(c.eq.display_range, 12.0);
     }
 
     #[test]

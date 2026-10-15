@@ -1,8 +1,8 @@
 //! built-in dsp. all `process` functions are real-time safe.
 
-pub mod biquad;
 pub mod denoise;
 pub mod eq;
+pub mod filter;
 pub mod gate;
 
 use std::sync::atomic::{AtomicU32, Ordering};

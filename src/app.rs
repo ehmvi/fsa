@@ -114,7 +114,7 @@ impl Setup {
         let fs = SAMPLE_RATE as f32;
         shared.set_input_channel(config.input_channel);
         shared.bypass.store(config.bypass, Ordering::Relaxed);
-        let eq = Arc::new(EqParams::new(&config.eq.to_bands()));
+        let eq = Arc::new(EqParams::new(&config.eq.to_bands(), config.eq.output_gain));
         let gate = Arc::new(GateParams::new(&config.gate.into()));
         let denoise = Arc::new(DenoiseParams::new(&config.denoise.into()));
         let mut chain = Vec::new();
@@ -329,6 +329,7 @@ pub struct App {
     backend: Backend,
     engine: EngineHandle,
     eq: Arc<EqParams>,
+    eq_view: ui::eq_view::EqView,
     gate: Arc<GateParams>,
     denoise: Arc<DenoiseParams>,
     chain: Vec<ChainItem>,
@@ -380,6 +381,7 @@ impl App {
             shared,
             backend,
             engine,
+            eq_view: ui::eq_view::EqView::new(&config.eq),
             eq,
             gate,
             denoise,
@@ -410,7 +412,10 @@ impl App {
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             chain: self.chain.iter().map(ChainItem::to_entry).collect(),
             eq: EqConfig {
-                bands: self.eq.snapshot().iter().map(|&b| b.into()).collect(),
+                output_gain: self.eq.output_gain.get(),
+                analyzer: self.eq_view.analyzer_mode,
+                display_range: self.eq_view.range,
+                bands: self.eq.snapshot().into_iter().map(Into::into).collect(),
             },
             gate: self.gate.get().into(),
             denoise: self.denoise.get().into(),
@@ -662,10 +667,14 @@ impl App {
 
     fn selected_panel(&mut self, ui: &mut egui::Ui) {
         let Some(index) = self.chain.iter().position(|c| Some(c.id) == self.selected) else {
+            self.eq_view.hidden(&self.eq);
             ui.label("select an item in the chain");
             return;
         };
         let item = &mut self.chain[index];
+        if !matches!(item.kind, ItemKind::Eq) {
+            self.eq_view.hidden(&self.eq);
+        }
         ui.horizontal(|ui| {
             ui.heading(item.name());
             if !item.enabled() {
@@ -675,7 +684,7 @@ impl App {
         ui.separator();
         match &mut item.kind {
             ItemKind::Eq => {
-                egui::ScrollArea::vertical().show(ui, |ui| ui::eq_view::show(ui, &self.eq));
+                self.eq_view.show(ui, &self.eq);
             }
             ItemKind::Gate => {
                 ui::gate_view::show(ui, &self.gate);

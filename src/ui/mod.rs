@@ -3,6 +3,7 @@
 pub mod denoise_view;
 pub mod eq_view;
 pub mod gate_view;
+pub mod knob;
 pub mod meter;
 pub mod plugin_view;
 
