@@ -17,6 +17,20 @@ nix build            # or: nix run
 
 The flake builds for x86_64/aarch64 Linux and aarch64 macOS (see below).
 
+To install it on NixOS, add the package; there's no module because fsa
+creates its virtual mic as a normal PipeWire client, so nothing
+system-level is needed:
+
+```nix
+# flake.nix of your nixos config
+inputs.fsa.url = "github:ehmvi/fsa";
+# ...
+environment.systemPackages = [ inputs.fsa.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+```
+
+It needs PipeWire with the PulseAudio shim, since Discord sees inputs
+through it: `services.pipewire = { enable = true; pulse.enable = true; };`.
+
 `--channel left|right|mix` selects which channel of the source is used
 (default `left`). The source is captured as stereo, so for an interface
 like the UR22C with the mic on input 1, `left` avoids the -6 dB you'd get
