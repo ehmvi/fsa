@@ -183,6 +183,8 @@
                 dst="/Library/Audio/Plug-Ins/HAL/${driver}"
                 # kept outside the bundle so the driver's code signature stays intact
                 marker="/var/db/fsa-${driver}.nix-source"
+                ls "${cfg.blackhole.package}/Library/Audio/Plug-Ins/HAL" 2>/dev/null | grep -qxF "${driver}" \
+                  || { echo "fsa: ${driver} not found in ${cfg.blackhole.package}" >&2; exit 1; }
                 if [ ! -d "$dst" ] || [ "$(cat "$marker" 2>/dev/null)" != "${src}" ]; then
                   echo "fsa: installing ${driver}"
                   mkdir -p /Library/Audio/Plug-Ins/HAL
