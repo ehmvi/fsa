@@ -74,6 +74,11 @@
                 pipewire
                 libx11 # plugin editor host windows
                 lilv # lv2 hosting
+                # lilv-0.pc lists these in Requires.private, which pkg-config still resolves
+                serd
+                sord
+                sratom
+                zix
               ]
             );
             postFixup =
