@@ -251,7 +251,7 @@ fn host_info() -> HostInfo {
     HostInfo::new(
         "fsa",
         "fsa",
-        "https://github.com/anoscetia/fsa",
+        "https://github.com/ehmvi/fsa",
         env!("CARGO_PKG_VERSION"),
     )
     .expect("static host info")
