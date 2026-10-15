@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::MAX_BLOCK;
+use crate::dsp::denoise::Denoise;
 use crate::dsp::eq::Eq;
 use crate::dsp::gate::Gate;
 use crate::dsp::{Fade, peak};
@@ -36,6 +37,20 @@ impl Unit for Eq {
 
     fn reset(&mut self) {
         Eq::reset(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+        self
+    }
+}
+
+impl Unit for Denoise {
+    fn process(&mut self, buf: &mut [f32]) {
+        Denoise::process(self, buf)
+    }
+
+    fn reset(&mut self) {
+        Denoise::reset(self)
     }
 
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {

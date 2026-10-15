@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
+use crate::dsp::denoise::DenoiseSettings;
 use crate::dsp::eq::{BANDS, Band, DEFAULT_BANDS};
 use crate::dsp::gate::GateSettings;
 use crate::shared::InputChannel;
@@ -20,6 +21,7 @@ pub struct Config {
     pub chain: Vec<ChainEntry>,
     pub eq: EqConfig,
     pub gate: GateConfig,
+    pub denoise: DenoiseConfig,
 }
 
 impl Default for Config {
@@ -29,11 +31,13 @@ impl Default for Config {
             input_channel: InputChannel::Left,
             bypass: false,
             chain: vec![
+                ChainEntry::Denoise { enabled: true },
                 ChainEntry::Eq { enabled: true },
                 ChainEntry::Gate { enabled: true },
             ],
             eq: EqConfig::default(),
             gate: GateConfig::default(),
+            denoise: DenoiseConfig::default(),
         }
     }
 }
@@ -41,6 +45,9 @@ impl Default for Config {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ChainEntry {
+    Denoise {
+        enabled: bool,
+    },
     Eq {
         enabled: bool,
     },
@@ -150,6 +157,37 @@ impl From<GateConfig> for GateSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DenoiseConfig {
+    pub strength: f32,
+    pub vad_threshold: f32,
+}
+
+impl Default for DenoiseConfig {
+    fn default() -> Self {
+        DenoiseSettings::default().into()
+    }
+}
+
+impl From<DenoiseSettings> for DenoiseConfig {
+    fn from(s: DenoiseSettings) -> Self {
+        Self {
+            strength: s.strength,
+            vad_threshold: s.vad_threshold,
+        }
+    }
+}
+
+impl From<DenoiseConfig> for DenoiseSettings {
+    fn from(c: DenoiseConfig) -> Self {
+        Self {
+            strength: c.strength.clamp(0.0, 1.0),
+            vad_threshold: c.vad_threshold.clamp(0.0, 1.0),
+        }
+    }
+}
+
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
@@ -193,7 +231,9 @@ impl Config {
     fn normalize(&mut self) {
         let mut seen_eq = false;
         let mut seen_gate = false;
+        let mut seen_denoise = false;
         self.chain.retain(|e| match e {
+            ChainEntry::Denoise { .. } => !std::mem::replace(&mut seen_denoise, true),
             ChainEntry::Eq { .. } => !std::mem::replace(&mut seen_eq, true),
             ChainEntry::Gate { .. } => !std::mem::replace(&mut seen_gate, true),
             ChainEntry::Clap { .. } => true,
@@ -203,6 +243,10 @@ impl Config {
         }
         if !seen_gate {
             self.chain.push(ChainEntry::Gate { enabled: true });
+        }
+        if !seen_denoise {
+            // added by an update: don't change how an existing setup sounds
+            self.chain.insert(0, ChainEntry::Denoise { enabled: false });
         }
     }
 
@@ -243,10 +287,20 @@ mod tests {
 
     #[test]
     fn missing_builtins_are_restored() {
-        let mut c: Config = toml::from_str("bypass = true\nchain = []").unwrap();
+        let mut c: Config =
+            toml::from_str("bypass = true\nchain = [{ kind = \"gate\", enabled = false }]")
+                .unwrap();
         c.normalize();
         assert!(c.bypass);
-        assert_eq!(c.chain.len(), 2);
+        assert_eq!(
+            c.chain,
+            [
+                // a config from before denoise existed gets it, but switched off
+                ChainEntry::Denoise { enabled: false },
+                ChainEntry::Eq { enabled: true },
+                ChainEntry::Gate { enabled: false },
+            ]
+        );
     }
 
     #[test]

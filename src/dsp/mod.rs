@@ -1,6 +1,7 @@
 //! built-in dsp. all `process` functions are real-time safe.
 
 pub mod biquad;
+pub mod denoise;
 pub mod eq;
 pub mod gate;
 

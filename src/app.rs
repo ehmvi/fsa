@@ -12,6 +12,7 @@ use egui::{Color32, RichText};
 
 use crate::audio::{Backend, Ctrl, SAMPLE_RATE};
 use crate::config::{ChainEntry, Config, EqConfig};
+use crate::dsp::denoise::{Denoise, DenoiseParams};
 use crate::dsp::eq::{Eq, EqParams};
 use crate::dsp::gate::{Gate, GateParams};
 use crate::engine::{Command, EngineHandle, Passthrough, Slot, SlotState, Unit};
@@ -28,6 +29,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(800);
 const TEARDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub enum ItemKind {
+    Denoise,
     Eq,
     Gate,
     Plugin {
@@ -50,6 +52,7 @@ impl ChainItem {
         match &self.kind {
             ItemKind::Eq => "Equalizer".into(),
             ItemKind::Gate => "Noise gate".into(),
+            ItemKind::Denoise => "Noise suppression".into(),
             ItemKind::Plugin { plugin, .. } => plugin.info.name.clone(),
             ItemKind::Missing(ChainEntry::Clap { name, .. }) => format!("{name} (missing)"),
             ItemKind::Missing(_) => "(missing)".into(),
@@ -65,6 +68,7 @@ impl ChainItem {
         match &self.kind {
             ItemKind::Eq => ChainEntry::Eq { enabled },
             ItemKind::Gate => ChainEntry::Gate { enabled },
+            ItemKind::Denoise => ChainEntry::Denoise { enabled },
             ItemKind::Plugin { plugin, state } => ChainEntry::Clap {
                 enabled,
                 name: plugin.info.name.clone(),
@@ -85,6 +89,7 @@ fn encode_state(plugin: &mut ClapPlugin) -> Option<String> {
 pub struct Setup {
     pub eq: Arc<EqParams>,
     pub gate: Arc<GateParams>,
+    pub denoise: Arc<DenoiseParams>,
     pub chain: Vec<ChainItem>,
     pub slots: Vec<Slot>,
 }
@@ -96,6 +101,7 @@ impl Setup {
         shared.bypass.store(config.bypass, Ordering::Relaxed);
         let eq = Arc::new(EqParams::new(&config.eq.to_bands()));
         let gate = Arc::new(GateParams::new(&config.gate.into()));
+        let denoise = Arc::new(DenoiseParams::new(&config.denoise.into()));
         let mut chain = Vec::new();
         let mut slots = Vec::new();
         for (id, entry) in config.chain.iter().enumerate() {
@@ -103,6 +109,11 @@ impl Setup {
                 ChainEntry::Eq { enabled } => {
                     (ItemKind::Eq, *enabled, Box::new(Eq::new(eq.clone(), fs)))
                 }
+                ChainEntry::Denoise { enabled } => (
+                    ItemKind::Denoise,
+                    *enabled,
+                    Box::new(Denoise::new(denoise.clone())),
+                ),
                 ChainEntry::Gate { enabled } => (
                     ItemKind::Gate,
                     *enabled,
@@ -153,6 +164,7 @@ impl Setup {
         Self {
             eq,
             gate,
+            denoise,
             chain,
             slots,
         }
@@ -239,6 +251,7 @@ pub struct App {
     engine: EngineHandle,
     eq: Arc<EqParams>,
     gate: Arc<GateParams>,
+    denoise: Arc<DenoiseParams>,
     chain: Vec<ChainItem>,
     next_id: u32,
     /// plugins removed from the chain, waiting for the audio thread to let go
@@ -267,6 +280,7 @@ impl App {
         let Setup {
             eq,
             gate,
+            denoise,
             chain,
             slots: _,
         } = setup;
@@ -282,6 +296,7 @@ impl App {
             engine,
             eq,
             gate,
+            denoise,
             chain,
             next_id,
             removing: Vec::new(),
@@ -307,6 +322,7 @@ impl App {
                 bands: self.eq.snapshot().iter().map(|&b| b.into()).collect(),
             },
             gate: self.gate.get().into(),
+            denoise: self.denoise.get().into(),
         }
     }
 
@@ -563,6 +579,9 @@ impl App {
             }
             ItemKind::Gate => {
                 ui::gate_view::show(ui, &self.gate);
+            }
+            ItemKind::Denoise => {
+                ui::denoise_view::show(ui, &self.denoise);
             }
             ItemKind::Plugin { plugin, .. } => {
                 if let Err(e) = ui::plugin_view::show(ui, plugin) {

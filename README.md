@@ -39,6 +39,19 @@ Both streams share `node.group` (same driver, no drift) and
 `node.link-group` (the capture never links to our own source). Requested
 quantum is 256 frames at 48 kHz.
 
+## Built-in processing
+
+- **Noise suppression**: RNNoise (via the pure-Rust `nnnoiseless`) with
+  a strength (dry/wet) control and an optional voice gate that mutes the
+  output while RNNoise's speech probability is below a threshold. It
+  works on 10 ms frames, so it adds a fixed 10 ms of latency. Note:
+  nnnoiseless sets up its FFT plans lazily, so the first denoised frame
+  allocates once on the audio thread; nothing allocates after that.
+- **Equalizer**: high-pass, low shelf, two peaks, high shelf.
+- **Noise gate** with hysteresis, hold and range.
+
+Every chain item crossfades over 10 ms when switched on or off.
+
 ## CLAP plugins
 
 **Add plugin…** scans `$CLAP_PATH`, `~/.clap`, `/run/current-system/sw/lib/clap`,
