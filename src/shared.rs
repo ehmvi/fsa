@@ -46,8 +46,10 @@ pub struct Shared {
     pub out_peak: AtomicF32,
     /// playback underruns, for diagnostics
     pub xruns: AtomicU32,
-    /// audio sources currently known to pipewire (non-rt only)
+    /// capture devices currently known to the backend (non-rt only)
     pub devices: Mutex<Vec<Device>>,
+    /// output devices the processed signal can be played into (macos only)
+    pub outputs: Mutex<Vec<Device>>,
     /// human readable backend state (non-rt only)
     pub status: Mutex<String>,
 }

@@ -1,15 +1,23 @@
-//! audio backend. on linux this is pipewire; elsewhere a stub so the gui
-//! and dsp can be developed and tested without a pipewire daemon.
+//! audio backend: pipewire on linux, coreaudio (into blackhole) on macos,
+//! and a test-signal stub elsewhere.
 
 #[cfg(target_os = "linux")]
 mod pipewire;
 #[cfg(target_os = "linux")]
 pub use self::pipewire::Backend;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+mod coreaudio;
+#[cfg(target_os = "macos")]
+pub use self::coreaudio::Backend;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod stub;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use self::stub::Backend;
+
+/// whether the backend plays into a user-chosen output device (macos)
+pub const HAS_OUTPUT_PICKER: bool = cfg!(target_os = "macos");
 
 pub const SAMPLE_RATE: u32 = 48_000;
 /// requested graph quantum. 256 frames is ~5.3 ms; with the ring between
@@ -22,6 +30,7 @@ pub const MAX_BLOCK: usize = 8192;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const SOURCE_NODE_NAME: &str = "fsa.processed";
 /// node.description of the virtual source, what discord shows
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const SOURCE_DESCRIPTION: &str = "Mic (processed)";
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const CAPTURE_NODE_NAME: &str = "fsa.capture";
@@ -38,5 +47,8 @@ pub struct Device {
 pub enum Ctrl {
     /// switch the capture to another source (`None` = session default)
     SetInput(Option<String>),
+    /// switch the device the processed signal is played into (macos only;
+    /// `None` = the first blackhole device)
+    SetOutput(#[cfg_attr(target_os = "linux", allow(dead_code))] Option<String>),
     Quit,
 }

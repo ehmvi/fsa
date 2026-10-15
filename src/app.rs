@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use egui::{Color32, RichText};
 
-use crate::audio::{Backend, Ctrl, SAMPLE_RATE};
+use crate::audio::{Backend, Ctrl, Device, HAS_OUTPUT_PICKER, SAMPLE_RATE};
 use crate::config::{ChainEntry, Config, EqConfig};
 use crate::dsp::denoise::{Denoise, DenoiseParams};
 use crate::dsp::eq::{Eq, EqParams};
@@ -217,6 +217,44 @@ enum RowAction {
     ToggleEditor(usize),
 }
 
+/// device picker; returns the new selection when the user picked one
+fn device_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &Option<String>,
+    devices: &[Device],
+    none_label: &str,
+) -> Option<Option<String>> {
+    let text = match current {
+        None => none_label.to_string(),
+        Some(name) => devices
+            .iter()
+            .find(|d| &d.name == name)
+            .map(|d| d.description.clone())
+            .unwrap_or_else(|| format!("{name} (missing)")),
+    };
+    let mut pick = None;
+    egui::ComboBox::from_id_salt(id)
+        .width(240.0)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), none_label).clicked() {
+                pick = Some(None);
+            }
+            for d in devices {
+                let sel = current.as_deref() == Some(d.name.as_str());
+                if ui
+                    .selectable_label(sel, &d.description)
+                    .on_hover_text(&d.name)
+                    .clicked()
+                {
+                    pick = Some(Some(d.name.clone()));
+                }
+            }
+        });
+    pick
+}
+
 /// one row of the chain list
 fn chain_row(
     ui: &mut egui::Ui,
@@ -304,6 +342,7 @@ pub struct App {
     retired_lv2: Vec<Lv2Host>,
     browser: Browser,
     input: Option<String>,
+    output: Option<String>,
     selected: Option<u32>,
     error: Option<String>,
     meter_in: Meter,
@@ -352,6 +391,7 @@ impl App {
             retired_lv2: Vec::new(),
             browser: Browser::default(),
             input: config.input.clone(),
+            output: config.output.clone(),
             selected,
             error,
             meter_in: Meter::default(),
@@ -365,6 +405,7 @@ impl App {
     fn snapshot(&self) -> Config {
         Config {
             input: self.input.clone(),
+            output: self.output.clone(),
             input_channel: self.shared.input_channel(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             chain: self.chain.iter().map(ChainItem::to_entry).collect(),
@@ -504,37 +545,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("Input");
             let devices = self.shared.devices.lock().unwrap().clone();
-            let current = match &self.input {
-                None => "System default".to_string(),
-                Some(name) => devices
-                    .iter()
-                    .find(|d| &d.name == name)
-                    .map(|d| d.description.clone())
-                    .unwrap_or_else(|| format!("{name} (missing)")),
-            };
-            let mut pick = None;
-            egui::ComboBox::from_id_salt("input")
-                .width(260.0)
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(self.input.is_none(), "System default")
-                        .clicked()
-                    {
-                        pick = Some(None);
-                    }
-                    for d in &devices {
-                        let sel = self.input.as_deref() == Some(d.name.as_str());
-                        if ui
-                            .selectable_label(sel, &d.description)
-                            .on_hover_text(&d.name)
-                            .clicked()
-                        {
-                            pick = Some(Some(d.name.clone()));
-                        }
-                    }
-                });
-            if let Some(p) = pick
+            if let Some(p) = device_combo(ui, "input", &self.input, &devices, "System default")
                 && p != self.input
             {
                 self.input = p.clone();
@@ -558,6 +569,20 @@ impl App {
                 .on_hover_text("which input channel carries the mic");
             if ch != self.shared.input_channel() {
                 self.shared.set_input_channel(ch);
+            }
+
+            if HAS_OUTPUT_PICKER {
+                ui.label("Output").on_hover_text(
+                    "the processed signal plays into this device; pick it as the mic in discord",
+                );
+                let outputs = self.shared.outputs.lock().unwrap().clone();
+                if let Some(p) =
+                    device_combo(ui, "output", &self.output, &outputs, "BlackHole (auto)")
+                    && p != self.output
+                {
+                    self.output = p.clone();
+                    self.backend.send(Ctrl::SetOutput(p));
+                }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

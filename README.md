@@ -29,6 +29,24 @@ pw-top                                     # check quantum / xruns
 
 In Discord: Settings → Voice & Video → Input Device → **Mic (processed)**.
 
+## macOS (nix-darwin)
+
+macOS has no PipeWire, and an app can't publish a virtual mic by itself.
+On macOS, fsa captures your input through CoreAudio, processes it, and
+plays the result into the **BlackHole** virtual audio device. In Discord,
+pick **BlackHole 2ch** as the input device.
+
+- **Output** in the top bar picks the device to play into. By default it
+  uses the first BlackHole device, and it never falls back to your
+  speakers (that would feed the mic back into itself).
+- Both devices run at 48 kHz float. The two device clocks drift, so fsa
+  keeps a ~10 ms cushion and slips single samples (with interpolation) to
+  hold it steady.
+- **Test signal (no mic)** in the input list feeds a tone, which is handy
+  for checking the routing without a mic.
+- The first run asks for microphone access for whichever app launched
+  fsa (e.g. your terminal).
+
 ## How it works
 
 Two PipeWire streams, like `module-loopback`: a capture stream linked to the

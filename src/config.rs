@@ -16,6 +16,9 @@ use crate::shared::InputChannel;
 pub struct Config {
     /// node.name of the capture source; none = system default
     pub input: Option<String>,
+    /// macos: device the processed signal is played into (none = blackhole)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     pub input_channel: InputChannel,
     pub bypass: bool,
     /// processing order, top to bottom
@@ -29,6 +32,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             input: None,
+            output: None,
             input_channel: InputChannel::Left,
             bypass: false,
             chain: vec![
@@ -278,9 +282,12 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut c = Config::default();
-        c.input = Some("alsa_input.usb-Yamaha_Steinberg_UR22C".into());
-        c.input_channel = InputChannel::Right;
+        let mut c = Config {
+            input: Some("alsa_input.usb-Yamaha_Steinberg_UR22C".into()),
+            output: Some("coreaudio:BlackHole2ch_UID".into()),
+            input_channel: InputChannel::Right,
+            ..Default::default()
+        };
         c.chain.reverse();
         c.chain.push(ChainEntry::Clap {
             enabled: false,

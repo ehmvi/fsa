@@ -70,7 +70,12 @@ fn main() -> anyhow::Result<()> {
         std::mem::take(&mut setup.slots),
         audio::SAMPLE_RATE as f32,
     );
-    let backend = audio::Backend::start(shared.clone(), engine, config.input.clone())?;
+    let backend = audio::Backend::start(
+        shared.clone(),
+        engine,
+        config.input.clone(),
+        config.output.clone(),
+    )?;
 
     if list {
         std::thread::sleep(Duration::from_millis(500));
