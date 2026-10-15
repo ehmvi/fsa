@@ -1,8 +1,9 @@
 # fsa
 
-Small real-time microphone processor for PipeWire. Takes a capture source,
-runs it through a processing chain and exposes the result as a virtual mic
-called **Mic (processed)** that Discord (or anything else) can select.
+Small real-time microphone processor. Takes a capture source, runs it
+through a processing chain and exposes the result as a virtual mic that
+Discord (or anything else) can select: **Mic (processed)** via PipeWire on
+Linux, **BlackHole 2ch** on macOS.
 
 ## Build / run (NixOS)
 
@@ -13,6 +14,8 @@ cargo run --release -- --input <node.name>  # start the gui (input can also be p
 
 nix build            # or: nix run
 ```
+
+The flake builds for x86_64/aarch64 Linux and aarch64 macOS (see below).
 
 `--channel left|right|mix` selects which channel of the source is used
 (default `left`). The source is captured as stereo, so for an interface
@@ -30,6 +33,34 @@ pw-top                                     # check quantum / xruns
 In Discord: Settings → Voice & Video → Input Device → **Mic (processed)**.
 
 ## macOS (nix-darwin)
+
+Add the flake's nix-darwin module. It installs fsa (as `fsa.app`, plus
+`fsa` on PATH) and the BlackHole 2ch driver:
+
+```nix
+# flake.nix of your nix-darwin config
+inputs.fsa.url = "path:/path/to/fsa"; # or wherever the repo lives
+# ...
+darwinConfigurations.<host> = nix-darwin.lib.darwinSystem {
+  modules = [
+    inputs.fsa.darwinModules.default
+    { programs.fsa.enable = true; }
+  ];
+};
+```
+
+`darwin-rebuild switch` copies the driver to `/Library/Audio/Plug-Ins/HAL`
+(coreaudiod only loads drivers from there) and restarts coreaudiod when it
+changes. Options: `programs.fsa.blackhole.enable` (set it to `false` if
+you already installed BlackHole another way) and
+`programs.fsa.blackhole.channel` (`"2ch"` by default). Disabling the
+module doesn't remove an installed driver; delete
+`/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` and run
+`sudo killall coreaudiod` to remove it.
+
+Without the module: `nix build .#blackhole`, copy
+`result/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` there yourself,
+then `nix run .` (or `nix develop` + `cargo run --release`).
 
 macOS has no PipeWire, and an app can't publish a virtual mic by itself.
 On macOS, fsa captures your input through CoreAudio, processes it, and
