@@ -2,6 +2,7 @@
 
 pub mod eq_view;
 pub mod gate_view;
+pub mod meter;
 
 use egui::{Color32, RichText, Ui, vec2};
 

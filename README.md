@@ -38,3 +38,11 @@ passes samples to the playback callback through a lock-free `rtrb` ring.
 Both streams share `node.group` (same driver, no drift) and
 `node.link-group` (the capture never links to our own source). Requested
 quantum is 256 frames at 48 kHz.
+
+## Settings
+
+Everything (input, channel, bypass, chain order and on/off state, EQ and
+gate parameters) lives in `~/.config/fsa/config.toml` (respects
+`$XDG_CONFIG_HOME`; override with `--config <path>`). It's written about
+a second after the last change and again on exit. If the file can't be
+parsed, it's moved to `config.toml.bad` and defaults are used.

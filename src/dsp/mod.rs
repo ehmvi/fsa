@@ -22,6 +22,23 @@ impl AtomicF32 {
     pub fn set(&self, v: f32) {
         self.0.store(v.to_bits(), Ordering::Relaxed);
     }
+
+    /// raises the stored value to `v` (for peak meters). load/store is not
+    /// one atomic step, but a lost peak between gui reads is harmless.
+    pub fn raise(&self, v: f32) {
+        if v > self.get() {
+            self.set(v);
+        }
+    }
+
+    /// reads and resets to zero
+    pub fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(0, Ordering::Relaxed))
+    }
+}
+
+pub fn peak(buf: &[f32]) -> f32 {
+    buf.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
 pub fn db_to_lin(db: f32) -> f32 {

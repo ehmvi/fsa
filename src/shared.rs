@@ -5,8 +5,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::audio::Device;
+use crate::dsp::AtomicF32;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InputChannel {
     #[default]
     Left,
@@ -39,6 +41,9 @@ pub struct Shared {
     pub bypass: AtomicBool,
     /// which channel of the (stereo) capture to use, see `InputChannel`
     pub input_channel: AtomicU8,
+    /// peak levels since the gui last looked (linear)
+    pub in_peak: AtomicF32,
+    pub out_peak: AtomicF32,
     /// playback underruns, for diagnostics
     pub xruns: AtomicU32,
     /// audio sources currently known to pipewire (non-rt only)

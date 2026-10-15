@@ -1,17 +1,23 @@
 //! the gui: chain list on the left, the selected item's panel in the middle.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText};
 
-use crate::audio::{Backend, Ctrl};
-use crate::dsp::eq::EqParams;
-use crate::dsp::gate::GateParams;
-use crate::engine::{Command, EngineHandle, SlotState};
+use crate::audio::{Backend, Ctrl, SAMPLE_RATE};
+use crate::config::{ChainEntry, Config, EqConfig};
+use crate::dsp::eq::{Eq, EqParams};
+use crate::dsp::gate::{Gate, GateParams};
+use crate::engine::{Command, EngineHandle, Slot, SlotState, Unit};
 use crate::shared::{InputChannel, Shared};
+use crate::ui::meter::Meter;
 use crate::ui::{self, AMBER, GREEN};
+
+/// how long settings must stay unchanged before they are written to disk
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
@@ -36,17 +42,76 @@ impl ChainItem {
     pub fn enabled(&self) -> bool {
         self.state.enabled.load(Ordering::Relaxed)
     }
+
+    fn to_entry(&self) -> ChainEntry {
+        let enabled = self.enabled();
+        match self.kind {
+            ItemKind::Eq => ChainEntry::Eq { enabled },
+            ItemKind::Gate => ChainEntry::Gate { enabled },
+        }
+    }
 }
 
-pub struct App {
-    pub shared: Arc<Shared>,
-    pub backend: Backend,
-    pub engine: EngineHandle,
+/// everything built from the config before the audio thread starts
+pub struct Setup {
     pub eq: Arc<EqParams>,
     pub gate: Arc<GateParams>,
     pub chain: Vec<ChainItem>,
-    pub input: Option<String>,
+    pub slots: Vec<Slot>,
+}
+
+impl Setup {
+    pub fn from_config(config: &Config, shared: &Shared) -> Self {
+        let fs = SAMPLE_RATE as f32;
+        shared.set_input_channel(config.input_channel);
+        shared.bypass.store(config.bypass, Ordering::Relaxed);
+        let eq = Arc::new(EqParams::new(&config.eq.to_bands()));
+        let gate = Arc::new(GateParams::new(&config.gate.into()));
+        let mut chain = Vec::new();
+        let mut slots = Vec::new();
+        for (id, entry) in config.chain.iter().enumerate() {
+            let (kind, enabled, unit): (_, _, Box<dyn Unit>) = match *entry {
+                ChainEntry::Eq { enabled } => {
+                    (ItemKind::Eq, enabled, Box::new(Eq::new(eq.clone(), fs)))
+                }
+                ChainEntry::Gate { enabled } => (
+                    ItemKind::Gate,
+                    enabled,
+                    Box::new(Gate::new(gate.clone(), fs)),
+                ),
+            };
+            let item = ChainItem {
+                id: id as u32,
+                kind,
+                state: SlotState::new(enabled),
+            };
+            slots.push(Slot::new(item.id, unit, item.state.clone(), fs));
+            chain.push(item);
+        }
+        Self {
+            eq,
+            gate,
+            chain,
+            slots,
+        }
+    }
+}
+
+pub struct App {
+    shared: Arc<Shared>,
+    backend: Backend,
+    engine: EngineHandle,
+    eq: Arc<EqParams>,
+    gate: Arc<GateParams>,
+    chain: Vec<ChainItem>,
+    input: Option<String>,
     selected: Option<u32>,
+    meter_in: Meter,
+    meter_out: Meter,
+    config_path: PathBuf,
+    saved: Config,
+    /// latest unsaved snapshot and when it last changed
+    pending: Option<(Config, Instant)>,
 }
 
 impl App {
@@ -54,11 +119,16 @@ impl App {
         shared: Arc<Shared>,
         backend: Backend,
         engine: EngineHandle,
-        eq: Arc<EqParams>,
-        gate: Arc<GateParams>,
-        chain: Vec<ChainItem>,
-        input: Option<String>,
+        setup: Setup,
+        config: Config,
+        config_path: PathBuf,
     ) -> Self {
+        let Setup {
+            eq,
+            gate,
+            chain,
+            slots: _,
+        } = setup;
         let selected = chain.first().map(|c| c.id);
         Self {
             shared,
@@ -67,8 +137,50 @@ impl App {
             eq,
             gate,
             chain,
-            input,
+            input: config.input.clone(),
             selected,
+            meter_in: Meter::default(),
+            meter_out: Meter::default(),
+            config_path,
+            saved: config,
+            pending: None,
+        }
+    }
+
+    fn snapshot(&self) -> Config {
+        Config {
+            input: self.input.clone(),
+            input_channel: self.shared.input_channel(),
+            bypass: self.shared.bypass.load(Ordering::Relaxed),
+            chain: self.chain.iter().map(ChainItem::to_entry).collect(),
+            eq: EqConfig {
+                bands: self.eq.snapshot().iter().map(|&b| b.into()).collect(),
+            },
+            gate: self.gate.get().into(),
+        }
+    }
+
+    fn save(&mut self, config: Config) {
+        match config.save(&self.config_path) {
+            Ok(()) => log::debug!("saved {}", self.config_path.display()),
+            Err(e) => log::error!("saving config: {e:#}"),
+        }
+        self.saved = config;
+        self.pending = None;
+    }
+
+    /// saves once the settings have been stable for `SAVE_DEBOUNCE`
+    fn autosave(&mut self) {
+        let snap = self.snapshot();
+        let now = Instant::now();
+        match &self.pending {
+            _ if snap == self.saved => self.pending = None,
+            Some((p, since)) if *p == snap => {
+                if now.duration_since(*since) >= SAVE_DEBOUNCE {
+                    self.save(snap);
+                }
+            }
+            _ => self.pending = Some((snap, now)),
         }
     }
 
@@ -237,6 +349,18 @@ impl eframe::App for App {
                 }
             });
         });
+        self.meter_in.update(self.shared.in_peak.take());
+        self.meter_out.update(self.shared.out_peak.take());
+        egui::Panel::right("meters")
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.add_space(6.0);
+                let h = (ui.available_height() - 50.0).max(80.0);
+                ui.horizontal(|ui| {
+                    self.meter_in.show(ui, "IN", h);
+                    self.meter_out.show(ui, "OUT", h);
+                });
+            });
         egui::Panel::left("chain")
             .resizable(true)
             .default_size(260.0)
@@ -267,7 +391,13 @@ impl eframe::App for App {
             });
         });
 
+        self.autosave();
         // meters and the gate indicator need regular repaints
         ui.ctx().request_repaint_after(Duration::from_millis(33));
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let snap = self.snapshot();
+        self.save(snap);
     }
 }

@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::MAX_BLOCK;
-use crate::dsp::Fade;
 use crate::dsp::eq::Eq;
 use crate::dsp::gate::Gate;
+use crate::dsp::{Fade, peak};
 use crate::shared::Shared;
 
 pub const MAX_SLOTS: usize = 32;
@@ -188,6 +188,7 @@ impl Engine {
         let n = input.len();
         let dry = &mut self.dry[..n];
         output.copy_from_slice(input);
+        self.shared.in_peak.raise(peak(input));
 
         for slot in &mut self.slots {
             let on = slot.state.enabled.load(Ordering::Relaxed) && !slot.removing;
@@ -206,6 +207,7 @@ impl Engine {
 
         self.bypass.set(!self.shared.bypass.load(Ordering::Relaxed));
         self.bypass.mix(input, output);
+        self.shared.out_peak.raise(peak(output));
     }
 }
 
