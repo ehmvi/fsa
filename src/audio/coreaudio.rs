@@ -413,8 +413,12 @@ fn rebuild_input(st: &mut State) {
             String::new()
         }
         Err(e) => {
-            log::warn!("input: {e:#}");
-            format!("input: {e:#}")
+            let s = format!("input: {e:#}");
+            // retried every few seconds; only log changes
+            if s != st.input_status {
+                log::warn!("{s}");
+            }
+            s
         }
     };
     set_status(st);
@@ -461,8 +465,11 @@ fn rebuild_output(st: &mut State) {
             String::new()
         }
         Err(e) => {
-            log::warn!("output: {e:#}");
-            format!("output: {e:#}")
+            let s = format!("output: {e:#}");
+            if s != st.output_status {
+                log::warn!("{s}");
+            }
+            s
         }
     };
     set_status(st);

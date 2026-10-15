@@ -270,9 +270,9 @@ pub struct Param {
 }
 
 enum Editor {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Embedded {
-        window: super::x11::HostWindow,
+        window: super::window::HostWindow,
         resizable: bool,
     },
     Floating,
@@ -362,18 +362,21 @@ impl ClapPlugin {
     fn negotiate_gui(&mut self) -> Option<GuiConfiguration<'static>> {
         let gui = self.instance.access_handler(|h| h.gui.get())?;
         let handle = self.instance.plugin_handle();
-        if cfg!(target_os = "linux") {
-            // prefer embedding into our own x11 window, else let the plugin float its own
-            [false, true]
-                .into_iter()
-                .map(|is_floating| GuiConfiguration {
-                    api_type: GuiApiType::X11,
-                    is_floating,
-                })
-                .find(|c| gui.is_api_supported(&handle, *c))
+        let api_type = if cfg!(target_os = "linux") {
+            GuiApiType::X11
+        } else if cfg!(target_os = "macos") {
+            GuiApiType::COCOA
         } else {
-            None
-        }
+            return None;
+        };
+        // prefer embedding into our own window, else let the plugin float its own
+        [false, true]
+            .into_iter()
+            .map(|is_floating| GuiConfiguration {
+                api_type,
+                is_floating,
+            })
+            .find(|c| gui.is_api_supported(&handle, *c))
     }
 
     pub fn has_editor(&self) -> bool {
@@ -406,17 +409,18 @@ impl ClapPlugin {
             self.editor = Some(Editor::Floating);
             return Ok(());
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let size = gui.get_size(&handle).unwrap_or(GuiSize {
                 width: 640,
                 height: 480,
             });
             let resizable = gui.can_resize(&handle);
-            let window = match super::x11::HostWindow::new(
+            let window = match super::window::HostWindow::new(
                 title.to_str().unwrap_or("plugin"),
                 size.width,
                 size.height,
+                resizable,
             ) {
                 Ok(w) => w,
                 Err(e) => {
@@ -424,7 +428,7 @@ impl ClapPlugin {
                     return Err(e);
                 }
             };
-            let parent = clack_extensions::gui::Window::from_x11_handle(window.id());
+            let parent = window.clap_window();
             // safety: the window outlives the plugin gui; we destroy the gui before dropping it
             if let Err(e) = unsafe { gui.set_parent(&handle, parent) } {
                 gui.destroy(&handle);
@@ -435,8 +439,8 @@ impl ClapPlugin {
             self.editor = Some(Editor::Embedded { window, resizable });
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
-        bail!("embedded editors are only supported on linux")
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        bail!("embedded editors aren't supported on this platform")
     }
 
     pub fn close_editor(&mut self) {
@@ -620,7 +624,7 @@ impl ClapPlugin {
             return;
         }
         let resize = self.requests.resize.swap(0, Ordering::AcqRel);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(Editor::Embedded { window, resizable }) = &mut self.editor {
             let gui = self.instance.access_handler(|h| h.gui.get());
             let Some(gui) = gui else { return };
@@ -630,8 +634,8 @@ impl ClapPlugin {
             let mut close = false;
             for ev in window.poll() {
                 match ev {
-                    super::x11::WindowEvent::CloseRequested => close = true,
-                    super::x11::WindowEvent::Resized(w, h) if *resizable => {
+                    super::window::WindowEvent::CloseRequested => close = true,
+                    super::window::WindowEvent::Resized(w, h) if *resizable => {
                         let handle = self.instance.plugin_handle();
                         let want = GuiSize {
                             width: w,
@@ -643,7 +647,7 @@ impl ClapPlugin {
                             window.resize(size.width, size.height);
                         }
                     }
-                    super::x11::WindowEvent::Resized(..) => {}
+                    super::window::WindowEvent::Resized(..) => {}
                 }
             }
             if close {

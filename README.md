@@ -77,12 +77,14 @@ Every chain item crossfades over 10 ms when switched on or off.
 `/etc/profiles/per-user/$USER/lib/clap` (home-manager) and `/usr{,/local}/lib/clap`.
 So adding a plugin to `environment.systemPackages` or `home.packages` is
 enough for it to show up.
+On macOS it also scans `~/Library/Audio/Plug-Ins/CLAP` and
+`/Library/Audio/Plug-Ins/CLAP` (and loads `.clap` bundles directly).
 
 - Effects only: the mono mic signal goes into every channel of the plugin's
   main input, and the main output channels are averaged back to mono.
-- **Edit** opens the plugin's own editor. CLAP on Linux only standardises
-  X11, so editors live in a separate X11 window (through XWayland on
-  Hyprland) with class `fsa-plugin`. To float them:
+- **Edit** opens the plugin's own editor in a separate window: Cocoa on
+  macOS; on Linux an X11 window (through XWayland on Hyprland) with class
+  `fsa-plugin`, since CLAP on Linux only standardises X11. To float them:
   `windowrule = float, class:fsa-plugin`. Plugins that can only create
   their own floating window are supported too.
 - Every plugin also gets a generic parameter list (double-click a slider
