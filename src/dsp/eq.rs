@@ -155,6 +155,8 @@ impl Eq {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
+        // indexes three parallel arrays
+        #[allow(clippy::needless_range_loop)]
         for i in 0..BANDS {
             let band = self.params.band(i);
             if self.current[i] != Some(band) {

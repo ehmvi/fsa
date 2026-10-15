@@ -73,7 +73,8 @@ pub struct HostWindow {
 }
 
 impl HostWindow {
-    pub fn new(title: &str, width: u32, height: u32) -> anyhow::Result<Self> {
+    /// `resizable` is left to the window manager on x11
+    pub fn new(title: &str, width: u32, height: u32, _resizable: bool) -> anyhow::Result<Self> {
         // safety: plain xlib calls on a connection we own
         unsafe {
             let display = XOpenDisplay(std::ptr::null());
@@ -115,8 +116,8 @@ impl HostWindow {
         }
     }
 
-    pub fn id(&self) -> c_ulong {
-        self.window
+    pub fn clap_window(&self) -> clack_extensions::gui::Window<'static, 'static> {
+        clack_extensions::gui::Window::from_x11_handle(self.window)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

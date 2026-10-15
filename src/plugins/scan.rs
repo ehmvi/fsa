@@ -8,7 +8,7 @@ use clack_host::prelude::PluginEntry;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginInfo {
-    /// path to the .clap file (the shared object; on macos the bundle binary)
+    /// path to the .clap file (linux: the shared object; macos: the bundle)
     pub path: PathBuf,
     pub id: String,
     pub name: String,
@@ -42,8 +42,15 @@ pub fn search_paths() -> Vec<PathBuf> {
     if let Some(home) = &home {
         paths.push(home.join(".nix-profile/lib/clap"));
     }
-    paths.push("/usr/lib/clap".into());
-    paths.push("/usr/local/lib/clap".into());
+    if cfg!(target_os = "macos") {
+        if let Some(home) = &home {
+            paths.push(home.join("Library/Audio/Plug-Ins/CLAP"));
+        }
+        paths.push("/Library/Audio/Plug-Ins/CLAP".into());
+    } else {
+        paths.push("/usr/lib/clap".into());
+        paths.push("/usr/local/lib/clap".into());
+    }
 
     let mut seen = HashSet::new();
     paths.retain(|p| seen.insert(p.clone()));
@@ -66,12 +73,8 @@ fn find_binaries(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         if is_clap && meta.is_file() {
             out.push(path);
         } else if is_clap && meta.is_dir() {
-            // macos bundle: Foo.clap/Contents/MacOS/Foo
-            let stem = path.file_stem().unwrap_or_default();
-            let bin = path.join("Contents/MacOS").join(stem);
-            if bin.is_file() {
-                out.push(bin);
-            }
+            // macos bundle: clack resolves the binary and passes the bundle path to the plugin
+            out.push(path);
         } else if meta.is_dir() && depth < 4 {
             find_binaries(&path, depth + 1, out);
         }

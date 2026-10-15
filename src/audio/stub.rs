@@ -21,6 +21,7 @@ impl Backend {
         shared: Arc<Shared>,
         mut engine: Engine,
         _input: Option<String>,
+        _output: Option<String>,
     ) -> anyhow::Result<Self> {
         shared.set_status(format!(
             "no pipewire on this platform: test signal into \"{SOURCE_DESCRIPTION}\""

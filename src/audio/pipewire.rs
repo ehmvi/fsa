@@ -48,6 +48,8 @@ impl Backend {
         shared: Arc<Shared>,
         engine: Engine,
         input: Option<String>,
+        // pipewire publishes its own virtual source, there is no output to pick
+        _output: Option<String>,
     ) -> anyhow::Result<Self> {
         let (tx, rx) = pw::channel::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -258,6 +260,7 @@ fn run(
                     log::error!("switching input: {e:#}");
                 }
             }
+            Ctrl::SetOutput(_) => {}
         }
     });
 

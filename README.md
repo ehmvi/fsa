@@ -1,8 +1,9 @@
 # fsa
 
-Small real-time microphone processor for PipeWire. Takes a capture source,
-runs it through a processing chain and exposes the result as a virtual mic
-called **Mic (processed)** that Discord (or anything else) can select.
+Small real-time microphone processor. Takes a capture source, runs it
+through a processing chain and exposes the result as a virtual mic that
+Discord (or anything else) can select: **Mic (processed)** via PipeWire on
+Linux, **BlackHole 2ch** on macOS.
 
 ## Build / run (NixOS)
 
@@ -13,6 +14,22 @@ cargo run --release -- --input <node.name>  # start the gui (input can also be p
 
 nix build            # or: nix run
 ```
+
+The flake builds for x86_64/aarch64 Linux and aarch64 macOS (see below).
+
+To install it on NixOS, add the package; there's no module because fsa
+creates its virtual mic as a normal PipeWire client, so nothing
+system-level is needed:
+
+```nix
+# flake.nix of your nixos config
+inputs.fsa.url = "github:ehmvi/fsa";
+# ...
+environment.systemPackages = [ inputs.fsa.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+```
+
+It needs PipeWire with the PulseAudio shim, since Discord sees inputs
+through it: `services.pipewire = { enable = true; pulse.enable = true; };`.
 
 `--channel left|right|mix` selects which channel of the source is used
 (default `left`). The source is captured as stereo, so for an interface
@@ -28,6 +45,52 @@ pw-top                                     # check quantum / xruns
 ```
 
 In Discord: Settings → Voice & Video → Input Device → **Mic (processed)**.
+
+## macOS (nix-darwin)
+
+Add the flake's nix-darwin module. It installs fsa (as `fsa.app`, plus
+`fsa` on PATH) and the BlackHole 2ch driver:
+
+```nix
+# flake.nix of your nix-darwin config
+inputs.fsa.url = "path:/path/to/fsa"; # or wherever the repo lives
+# ...
+darwinConfigurations.<host> = nix-darwin.lib.darwinSystem {
+  modules = [
+    inputs.fsa.darwinModules.default
+    { programs.fsa.enable = true; }
+  ];
+};
+```
+
+`darwin-rebuild switch` copies the driver to `/Library/Audio/Plug-Ins/HAL`
+(coreaudiod only loads drivers from there) and restarts coreaudiod when it
+changes. Options: `programs.fsa.blackhole.enable` (set it to `false` if
+you already installed BlackHole another way) and
+`programs.fsa.blackhole.channel` (`"2ch"` by default). Disabling the
+module doesn't remove an installed driver; delete
+`/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` and run
+`sudo killall coreaudiod` to remove it.
+
+Without the module: `nix build .#blackhole`, copy
+`result/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` there yourself,
+then `nix run .` (or `nix develop` + `cargo run --release`).
+
+macOS has no PipeWire, and an app can't publish a virtual mic by itself.
+On macOS, fsa captures your input through CoreAudio, processes it, and
+plays the result into the **BlackHole** virtual audio device. In Discord,
+pick **BlackHole 2ch** as the input device.
+
+- **Output** in the top bar picks the device to play into. By default it
+  uses the first BlackHole device, and it never falls back to your
+  speakers (that would feed the mic back into itself).
+- Both devices run at 48 kHz float. The two device clocks drift, so fsa
+  keeps a ~10 ms cushion and slips single samples (with interpolation) to
+  hold it steady.
+- **Test signal (no mic)** in the input list feeds a tone, which is handy
+  for checking the routing without a mic.
+- The first run asks for microphone access for whichever app launched
+  fsa (e.g. your terminal).
 
 ## How it works
 
@@ -59,12 +122,14 @@ Every chain item crossfades over 10 ms when switched on or off.
 `/etc/profiles/per-user/$USER/lib/clap` (home-manager) and `/usr{,/local}/lib/clap`.
 So adding a plugin to `environment.systemPackages` or `home.packages` is
 enough for it to show up.
+On macOS it also scans `~/Library/Audio/Plug-Ins/CLAP` and
+`/Library/Audio/Plug-Ins/CLAP` (and loads `.clap` bundles directly).
 
 - Effects only: the mono mic signal goes into every channel of the plugin's
   main input, and the main output channels are averaged back to mono.
-- **Edit** opens the plugin's own editor. CLAP on Linux only standardises
-  X11, so editors live in a separate X11 window (through XWayland on
-  Hyprland) with class `fsa-plugin`. To float them:
+- **Edit** opens the plugin's own editor in a separate window: Cocoa on
+  macOS; on Linux an X11 window (through XWayland on Hyprland) with class
+  `fsa-plugin`, since CLAP on Linux only standardises X11. To float them:
   `windowrule = float, class:fsa-plugin`. Plugins that can only create
   their own floating window are supported too.
 - Every plugin also gets a generic parameter list (double-click a slider

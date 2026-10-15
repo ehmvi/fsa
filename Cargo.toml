@@ -28,5 +28,11 @@ livi = "0.7"
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.10", features = ["v0_3_49"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.18"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow", "NSView", "NSResponder", "NSGraphics"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry"] }
+
 [profile.release]
 debug = 1
