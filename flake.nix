@@ -44,10 +44,12 @@
           buildInputs = with pkgs; [
             pipewire
             libx11 # plugin editor host windows
+            lilv # lv2 hosting
           ];
           postFixup = ''
             wrapProgram $out/bin/fsa \
-              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}
+              --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)} \
+              --suffix LV2_PATH : ${pkgs.lv2}/lib/lv2
           '';
           meta = {
             description = "real-time microphone processor exposing a virtual pipewire source";
@@ -69,6 +71,7 @@
           ];
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
+          LV2_PATH = "${pkgs.lv2}/lib/lv2";
         };
       });
     };

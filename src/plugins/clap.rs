@@ -802,7 +802,7 @@ impl Unit for ClapUnit {
         *steady += n as u64;
         // on error the dry signal passes through untouched
         if result.is_ok() {
-            mixdown(out_bufs, buf);
+            super::mixdown(out_bufs, buf);
         }
     }
 
@@ -823,21 +823,6 @@ impl Unit for ClapUnit {
 
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
         self
-    }
-}
-
-/// averages the plugin's output channels back to mono
-fn mixdown(outs: &[Box<[f32]>], buf: &mut [f32]) {
-    let n = buf.len();
-    match outs {
-        [] => {}
-        [mono] => buf.copy_from_slice(&mono[..n]),
-        many => {
-            let scale = 1.0 / many.len() as f32;
-            for (i, s) in buf.iter_mut().enumerate() {
-                *s = many.iter().map(|ch| ch[i]).sum::<f32>() * scale;
-            }
-        }
     }
 }
 

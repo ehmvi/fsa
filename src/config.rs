@@ -1,5 +1,6 @@
 //! persistent settings in ~/.config/fsa/config.toml.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -63,6 +64,15 @@ pub enum ChainEntry {
         /// plugin state blob, base64
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<String>,
+    },
+    Lv2 {
+        enabled: bool,
+        /// display name, also used if the plugin goes missing
+        name: String,
+        uri: String,
+        /// control input values by port symbol
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        controls: BTreeMap<String, f32>,
     },
 }
 
@@ -236,7 +246,7 @@ impl Config {
             ChainEntry::Denoise { .. } => !std::mem::replace(&mut seen_denoise, true),
             ChainEntry::Eq { .. } => !std::mem::replace(&mut seen_eq, true),
             ChainEntry::Gate { .. } => !std::mem::replace(&mut seen_gate, true),
-            ChainEntry::Clap { .. } => true,
+            ChainEntry::Clap { .. } | ChainEntry::Lv2 { .. } => true,
         });
         if !seen_eq {
             self.chain.insert(0, ChainEntry::Eq { enabled: true });

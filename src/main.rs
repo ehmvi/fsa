@@ -18,6 +18,8 @@ use crate::engine::Engine;
 use crate::shared::{InputChannel, Shared};
 
 fn main() -> anyhow::Result<()> {
+    // safety: nothing else is running yet
+    unsafe { plugins::lv2::export_search_path() };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let mut config_path = config::default_path();

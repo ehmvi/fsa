@@ -17,10 +17,11 @@ use crate::dsp::eq::{Eq, EqParams};
 use crate::dsp::gate::{Gate, GateParams};
 use crate::engine::{Command, EngineHandle, Passthrough, Slot, SlotState, Unit};
 use crate::plugins::clap::{ClapPlugin, ClapUnit};
+use crate::plugins::lv2::{Lv2Host, Lv2Info, Lv2Plugin};
 use crate::plugins::scan::PluginInfo;
 use crate::shared::{InputChannel, Shared};
 use crate::ui::meter::Meter;
-use crate::ui::plugin_view::Browser;
+use crate::ui::plugin_view::{Browser, Choice};
 use crate::ui::{self, AMBER, GREEN};
 
 /// how long settings must stay unchanged before they are written to disk
@@ -36,6 +37,9 @@ pub enum ItemKind {
         plugin: Box<ClapPlugin>,
         /// last saved plugin state, base64; refreshed when the plugin changes
         state: Option<String>,
+    },
+    Lv2 {
+        plugin: Box<Lv2Plugin>,
     },
     /// a configured plugin that failed to load; kept so the config survives
     Missing(ChainEntry),
@@ -54,7 +58,10 @@ impl ChainItem {
             ItemKind::Gate => "Noise gate".into(),
             ItemKind::Denoise => "Noise suppression".into(),
             ItemKind::Plugin { plugin, .. } => plugin.info.name.clone(),
-            ItemKind::Missing(ChainEntry::Clap { name, .. }) => format!("{name} (missing)"),
+            ItemKind::Lv2 { plugin } => plugin.info.name.clone(),
+            ItemKind::Missing(ChainEntry::Clap { name, .. } | ChainEntry::Lv2 { name, .. }) => {
+                format!("{name} (missing)")
+            }
             ItemKind::Missing(_) => "(missing)".into(),
         }
     }
@@ -76,6 +83,12 @@ impl ChainItem {
                 path: plugin.info.path.clone(),
                 state: state.clone(),
             },
+            ItemKind::Lv2 { plugin } => ChainEntry::Lv2 {
+                enabled,
+                name: plugin.info.name.clone(),
+                uri: plugin.info.uri.clone(),
+                controls: plugin.controls(),
+            },
             ItemKind::Missing(entry) => entry.clone(),
         }
     }
@@ -92,6 +105,8 @@ pub struct Setup {
     pub denoise: Arc<DenoiseParams>,
     pub chain: Vec<ChainItem>,
     pub slots: Vec<Slot>,
+    /// created only if the config has lv2 plugins
+    pub lv2: Option<Lv2Host>,
 }
 
 impl Setup {
@@ -104,6 +119,7 @@ impl Setup {
         let denoise = Arc::new(DenoiseParams::new(&config.denoise.into()));
         let mut chain = Vec::new();
         let mut slots = Vec::new();
+        let mut lv2: Option<Lv2Host> = None;
         for (id, entry) in config.chain.iter().enumerate() {
             let (kind, enabled, unit): (_, _, Box<dyn Unit>) = match entry {
                 ChainEntry::Eq { enabled } => {
@@ -119,6 +135,28 @@ impl Setup {
                     *enabled,
                     Box::new(Gate::new(gate.clone(), fs)),
                 ),
+                ChainEntry::Lv2 {
+                    enabled,
+                    name,
+                    uri,
+                    controls,
+                } => match lv2.get_or_insert_with(Lv2Host::new).load(uri, controls) {
+                    Ok((plugin, unit)) => (
+                        ItemKind::Lv2 {
+                            plugin: Box::new(plugin),
+                        },
+                        *enabled,
+                        Box::new(unit),
+                    ),
+                    Err(e) => {
+                        log::error!("{name}: {e:#}");
+                        (
+                            ItemKind::Missing(entry.clone()),
+                            false,
+                            Box::new(Passthrough),
+                        )
+                    }
+                },
                 ChainEntry::Clap {
                     enabled,
                     name,
@@ -167,6 +205,7 @@ impl Setup {
             denoise,
             chain,
             slots,
+            lv2,
         }
     }
 }
@@ -193,8 +232,10 @@ fn chain_row(
         size,
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
-            if matches!(item.kind, ItemKind::Plugin { .. } | ItemKind::Missing(_))
-                && ui.button("🗙").on_hover_text("remove from chain").clicked()
+            if matches!(
+                item.kind,
+                ItemKind::Plugin { .. } | ItemKind::Lv2 { .. } | ItemKind::Missing(_)
+            ) && ui.button("🗙").on_hover_text("remove from chain").clicked()
             {
                 action = Some(RowAction::Remove(i));
             }
@@ -256,6 +297,11 @@ pub struct App {
     next_id: u32,
     /// plugins removed from the chain, waiting for the audio thread to let go
     removing: Vec<(u32, Box<ClapPlugin>)>,
+    /// every removed plugin slot not yet handed back by the audio thread
+    awaiting: Vec<u32>,
+    lv2: Option<Lv2Host>,
+    /// lilv worlds replaced by a rescan, kept alive for the instances they made
+    retired_lv2: Vec<Lv2Host>,
     browser: Browser,
     input: Option<String>,
     selected: Option<u32>,
@@ -283,6 +329,7 @@ impl App {
             denoise,
             chain,
             slots: _,
+            lv2,
         } = setup;
         let selected = chain.first().map(|c| c.id);
         let next_id = chain.iter().map(|c| c.id + 1).max().unwrap_or(0);
@@ -300,6 +347,9 @@ impl App {
             chain,
             next_id,
             removing: Vec::new(),
+            awaiting: Vec::new(),
+            lv2,
+            retired_lv2: Vec::new(),
             browser: Browser::default(),
             input: config.input.clone(),
             selected,
@@ -386,9 +436,32 @@ impl App {
         }
     }
 
+    fn add_lv2(&mut self, info: &Lv2Info) {
+        let host = self.lv2.get_or_insert_with(Lv2Host::new);
+        match host.load(&info.uri, &Default::default()) {
+            Ok((plugin, unit)) => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let state = SlotState::new(true);
+                let slot = Slot::new(id, Box::new(unit), state.clone(), SAMPLE_RATE as f32);
+                self.engine.send(Command::Insert(slot));
+                self.chain.push(ChainItem {
+                    id,
+                    kind: ItemKind::Lv2 {
+                        plugin: Box::new(plugin),
+                    },
+                    state,
+                });
+                self.selected = Some(id);
+            }
+            Err(e) => self.error = Some(format!("{}: {e:#}", info.name)),
+        }
+    }
+
     fn remove_item(&mut self, index: usize) {
         let item = self.chain.remove(index);
         self.engine.send(Command::Remove(item.id));
+        self.awaiting.push(item.id);
         if let ItemKind::Plugin { mut plugin, .. } = item.kind {
             plugin.close_editor();
             self.removing.push((item.id, plugin));
@@ -401,6 +474,8 @@ impl App {
     /// deactivates plugins whose audio side came back from the engine
     fn collect_garbage(&mut self) {
         for slot in self.engine.collect_garbage() {
+            self.awaiting.retain(|id| *id != slot.id);
+            // anything but clap (e.g. lv2 instances) is simply dropped here, on the gui thread
             let Some(pos) = self.removing.iter().position(|(id, _)| *id == slot.id) else {
                 continue;
             };
@@ -588,15 +663,15 @@ impl App {
                     self.error = Some(format!("{}: {e:#}", plugin.info.name));
                 }
             }
+            ItemKind::Lv2 { plugin } => ui::plugin_view::show_lv2(ui, plugin),
             ItemKind::Missing(entry) => {
                 ui.label("this plugin could not be loaded and is bypassed.");
-                if let ChainEntry::Clap { id, path, .. } = entry {
-                    ui.label(
-                        RichText::new(format!("{id}\n{}", path.display()))
-                            .monospace()
-                            .small(),
-                    );
-                }
+                let details = match entry {
+                    ChainEntry::Clap { id, path, .. } => format!("{id}\n{}", path.display()),
+                    ChainEntry::Lv2 { uri, .. } => uri.clone(),
+                    _ => String::new(),
+                };
+                ui.label(RichText::new(details).monospace().small());
                 ui.label("its settings are kept in the config until you remove it.");
             }
         }
@@ -605,21 +680,29 @@ impl App {
     /// hands every plugin back to the main thread and deactivates it
     fn teardown_plugins(&mut self) {
         for i in (0..self.chain.len()).rev() {
-            if matches!(self.chain[i].kind, ItemKind::Plugin { .. }) {
+            if matches!(
+                self.chain[i].kind,
+                ItemKind::Plugin { .. } | ItemKind::Lv2 { .. }
+            ) {
                 self.remove_item(i);
             }
         }
         let deadline = Instant::now() + TEARDOWN_TIMEOUT;
-        while !self.removing.is_empty() && Instant::now() < deadline {
+        while !self.awaiting.is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
             self.collect_garbage();
         }
-        if !self.removing.is_empty() {
+        if !self.awaiting.is_empty() {
+            // lv2 instances still on the audio thread must not outlive their world
+            // (the lint fires for the non-linux stub, which has nothing to drop)
+            #[allow(clippy::forget_non_drop)]
+            std::mem::forget(self.lv2.take());
+            std::mem::forget(std::mem::take(&mut self.retired_lv2));
             // the audio thread isn't running; clack leaks rather than destroying
             // an instance whose processor is still alive, which is fine at exit
             log::warn!(
                 "{} plugin(s) not returned by the audio thread",
-                self.removing.len()
+                self.awaiting.len()
             );
         }
     }
@@ -628,7 +711,14 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.collect_garbage();
-        self.browser.run_pending_scan();
+        if self.browser.scan_pending() {
+            if self.browser.rescan_lv2 {
+                // lilv reads bundles once per world; keep the old one for live instances
+                self.retired_lv2.extend(self.lv2.take());
+            }
+            let host = self.lv2.get_or_insert_with(Lv2Host::new);
+            self.browser.run_pending_scan(host);
+        }
         let editor_open = self.poll_plugins();
 
         egui::Panel::top("top").show(ui, |ui| {
@@ -680,8 +770,10 @@ impl eframe::App for App {
             });
         egui::CentralPanel::default_margins().show(ui, |ui| self.selected_panel(ui));
 
-        if let Some(info) = self.browser.show(ui.ctx()) {
-            self.add_plugin(&info);
+        match self.browser.show(ui.ctx()) {
+            Some(Choice::Clap(info)) => self.add_plugin(&info),
+            Some(Choice::Lv2(info)) => self.add_lv2(&info),
+            None => {}
         }
 
         self.autosave();

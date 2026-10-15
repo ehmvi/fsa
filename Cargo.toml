@@ -20,6 +20,11 @@ base64 = "0.23"
 libc = "0.2"
 nnnoiseless = { version = "0.5", default-features = false }
 
+# lilv 0.2 doesn't build where c_char is unsigned (aarch64 linux)
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+lilv = "0.2"
+livi = "0.7"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.10", features = ["v0_3_49"] }
 
