@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
-use egui::{Color32, RichText};
+use egui::{Color32, RichText, Stroke};
 
 use crate::audio::{Backend, Ctrl, Device, HAS_OUTPUT_PICKER, SAMPLE_RATE};
 use crate::config::{ChainEntry, Config, EqConfig};
@@ -22,7 +22,8 @@ use crate::plugins::scan::PluginInfo;
 use crate::shared::{InputChannel, Shared};
 use crate::ui::meter::Meter;
 use crate::ui::plugin_view::{Browser, Choice};
-use crate::ui::{self, AMBER, GREEN};
+use crate::ui::theme::{self, ALERT, FAINT, INK, LINE, MUTED, SIGNAL, SURFACE};
+use crate::ui::{self, caption};
 
 /// how long settings must stay unchanged before they are written to disk
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(800);
@@ -270,22 +271,26 @@ fn chain_row(
         size,
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
+            let icon = |t: &str| egui::Button::new(RichText::new(t).color(MUTED)).frame(false);
             if matches!(
                 item.kind,
                 ItemKind::Plugin { .. } | ItemKind::Lv2 { .. } | ItemKind::Missing(_)
-            ) && ui.button("🗙").on_hover_text("remove from chain").clicked()
+            ) && ui
+                .add(icon("🗙"))
+                .on_hover_text("remove from chain")
+                .clicked()
             {
                 action = Some(RowAction::Remove(i));
             }
             if ui
-                .add_enabled(i + 1 < len, egui::Button::new("⏷"))
+                .add_enabled(i + 1 < len, icon("⏷"))
                 .on_hover_text("move down")
                 .clicked()
             {
                 action = Some(RowAction::Move(i, 1));
             }
             if ui
-                .add_enabled(i > 0, egui::Button::new("⏶"))
+                .add_enabled(i > 0, icon("⏶"))
                 .on_hover_text("move up")
                 .clicked()
             {
@@ -305,16 +310,21 @@ fn chain_row(
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let missing = matches!(item.kind, ItemKind::Missing(_));
+                let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(11.0));
+                ui.label(index.color(if selected { SIGNAL } else { FAINT }));
                 if ui
                     .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
                     .inner
                 {
                     item.state.enabled.store(!item.enabled(), Ordering::Relaxed);
                 }
-                let label = RichText::new(item.name()).size(15.0);
-                let label = if item.enabled() { label } else { label.weak() };
-                let label = if missing { label.color(AMBER) } else { label };
-                let resp = ui.add(egui::Button::selectable(selected, label).truncate());
+                let color = match (missing, item.enabled()) {
+                    (true, _) => ALERT,
+                    (false, true) => INK,
+                    (false, false) => MUTED,
+                };
+                let label = RichText::new(item.name()).size(14.5).color(color);
+                let resp = ui.add(egui::Button::new(label).frame(false).truncate());
                 if resp.on_hover_text(item.name()).clicked() {
                     action = Some(RowAction::Select);
                 }
@@ -548,7 +558,19 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Input");
+            // wordmark, as on the preview
+            let resp = ui.label(RichText::new("fsa").font(theme::bold(26.0)).color(INK));
+            let r = resp.rect;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.left() + 1.0, r.bottom() + 1.0),
+                    egui::vec2(18.0, 3.0),
+                ),
+                0.0,
+                SIGNAL,
+            );
+            ui.add_space(14.0);
+            caption(ui, "Input");
             let devices = self.shared.devices.lock().unwrap().clone();
             if let Some(p) = device_combo(ui, "input", &self.input, &devices, "System default")
                 && p != self.input
@@ -577,7 +599,7 @@ impl App {
             }
 
             if HAS_OUTPUT_PICKER {
-                ui.label("Output").on_hover_text(
+                caption(ui, "Output").on_hover_text(
                     "the processed signal plays into this device; pick it as the mic in discord",
                 );
                 let outputs = self.shared.outputs.lock().unwrap().clone();
@@ -592,16 +614,8 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let bypass = self.shared.bypass.load(Ordering::Relaxed);
-                let (text, fill) = if bypass {
-                    ("BYPASSED", AMBER)
-                } else {
-                    ("ACTIVE", GREEN)
-                };
-                let b = egui::Button::new(RichText::new(text).strong().color(Color32::WHITE))
-                    .fill(fill)
-                    .min_size(egui::vec2(96.0, 26.0));
-                if ui
-                    .add(b)
+                let text = if bypass { "BYPASSED" } else { "ACTIVE" };
+                if ui::pill(ui, text, !bypass, true, 96.0)
                     .on_hover_text("global bypass: output = raw input")
                     .clicked()
                 {
@@ -612,13 +626,8 @@ impl App {
     }
 
     fn chain_list(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Chain");
-        ui.label(
-            RichText::new("processing order, top to bottom")
-                .small()
-                .weak(),
-        );
-        ui.add_space(6.0);
+        caption(ui, "Chain").on_hover_text("processing order, top to bottom");
+        ui.add_space(2.0);
         let mut action = None;
         let len = self.chain.len();
         egui::ScrollArea::vertical()
@@ -627,13 +636,14 @@ impl App {
                 for (i, item) in self.chain.iter().enumerate() {
                     let selected = self.selected == Some(item.id);
                     let fill = if selected {
-                        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+                        SURFACE
                     } else {
                         Color32::TRANSPARENT
                     };
-                    egui::Frame::group(ui.style())
+                    let frame = egui::Frame::new()
                         .fill(fill)
-                        .inner_margin(6.0)
+                        .corner_radius(3.0)
+                        .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             if let Some(a) = chain_row(ui, item, i, len, selected) {
@@ -643,10 +653,28 @@ impl App {
                                 }
                             }
                         });
+                    let r = frame.response.rect;
+                    if selected {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                r.left_top(),
+                                egui::pos2(r.left() + 3.0, r.bottom()),
+                            ),
+                            0.0,
+                            SIGNAL,
+                        );
+                    }
                 }
             });
         ui.add_space(6.0);
-        if ui.button("➕ Add plugin…").clicked() {
+        if ui
+            .add(
+                egui::Button::new(RichText::new("+  Add plugin…").color(MUTED))
+                    .stroke(Stroke::new(1.0, LINE))
+                    .fill(Color32::TRANSPARENT),
+            )
+            .clicked()
+        {
             self.browser.open = true;
         }
         match action {
@@ -676,12 +704,12 @@ impl App {
             self.eq_view.hidden(&self.eq);
         }
         ui.horizontal(|ui| {
-            ui.heading(item.name());
+            ui.vertical(|ui| ui::title(ui, &item.name(), !item.enabled()));
             if !item.enabled() {
-                ui.label(RichText::new("(off)").weak());
+                caption(ui, "off");
             }
         });
-        ui.separator();
+        ui.add_space(10.0);
         match &mut item.kind {
             ItemKind::Eq => {
                 self.eq_view.show(ui, &self.eq);
@@ -755,40 +783,49 @@ impl eframe::App for App {
         }
         let editor_open = self.poll_plugins();
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.top_bar(ui);
-            ui.add_space(4.0);
-        });
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(self.shared.status.lock().unwrap().as_str()).small());
-                let xruns = self.shared.xruns.load(Ordering::Relaxed);
-                if xruns > 0 {
-                    ui.label(
-                        RichText::new(format!("· {xruns} underruns"))
-                            .small()
-                            .color(AMBER),
-                    );
-                }
-                if let Some(err) = &self.error {
-                    ui.label(
-                        RichText::new(err)
-                            .small()
-                            .color(Color32::from_rgb(0xe0, 0x5a, 0x5a)),
-                    );
-                    if ui.small_button("🗙").clicked() {
-                        self.error = None;
+        let bar = egui::Frame::new()
+            .fill(theme::BG)
+            .inner_margin(egui::Margin::symmetric(14, 10));
+        egui::Panel::top("top")
+            .frame(bar)
+            .show(ui, |ui| self.top_bar(ui));
+        egui::Panel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::symmetric(14, 5)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let status = self.shared.status.lock().unwrap().clone();
+                    ui.label(RichText::new(status).font(theme::mono(11.0)).color(MUTED));
+                    let xruns = self.shared.xruns.load(Ordering::Relaxed);
+                    if xruns > 0 {
+                        ui.label(
+                            RichText::new(format!("· {xruns} underruns"))
+                                .font(theme::mono(11.0))
+                                .color(SIGNAL),
+                        );
                     }
-                }
+                    if let Some(err) = &self.error {
+                        ui.label(RichText::new(err).font(theme::mono(11.0)).color(ALERT));
+                        if ui.small_button("🗙").clicked() {
+                            self.error = None;
+                        }
+                    }
+                });
             });
-        });
         self.meter_in.update(self.shared.in_peak.take());
         self.meter_out.update(self.shared.out_peak.take());
+        let side = |x, y| {
+            egui::Frame::new()
+                .fill(theme::BG)
+                .inner_margin(egui::Margin::symmetric(x, y))
+        };
         egui::Panel::right("meters")
             .resizable(false)
+            .frame(side(12, 14))
             .show(ui, |ui| {
-                ui.add_space(6.0);
                 let h = (ui.available_height() - 50.0).max(80.0);
                 ui.horizontal(|ui| {
                     self.meter_in.show(ui, "IN", h);
@@ -798,11 +835,11 @@ impl eframe::App for App {
         egui::Panel::left("chain")
             .resizable(true)
             .default_size(300.0)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                self.chain_list(ui);
-            });
-        egui::CentralPanel::default_margins().show(ui, |ui| self.selected_panel(ui));
+            .frame(side(12, 14))
+            .show(ui, |ui| self.chain_list(ui));
+        egui::CentralPanel::default()
+            .frame(side(20, 16))
+            .show(ui, |ui| self.selected_panel(ui));
 
         match self.browser.show(ui.ctx()) {
             Some(Choice::Clap(info)) => self.add_plugin(&info),

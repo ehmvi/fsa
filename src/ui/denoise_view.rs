@@ -1,8 +1,8 @@
 //! rnnoise panel.
 
-use egui::{Color32, ProgressBar, RichText, Ui};
+use egui::{ProgressBar, RichText, Ui};
 
-use super::GREEN;
+use super::theme::{FAINT, SIGNAL};
 use crate::dsp::denoise::DenoiseParams;
 
 pub fn show(ui: &mut Ui, params: &DenoiseParams) {
@@ -19,7 +19,7 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
             ui.label("voice");
-            let color = if open { GREEN } else { Color32::from_gray(90) };
+            let color = if open { SIGNAL } else { FAINT };
             ui.add(
                 ProgressBar::new(vad)
                     .desired_width(220.0)

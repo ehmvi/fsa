@@ -1,9 +1,10 @@
-# fsa
+# finally simple audio
 
-Small real-time microphone processor. Takes a capture source, runs it
-through a processing chain and exposes the result as a virtual mic that
-Discord (or anything else) can select: **Mic (processed)** via PipeWire on
-Linux, **BlackHole 2ch** on macOS.
+<img width="1280" height="640" alt="social-preview-eq-v1" src="https://github.com/user-attachments/assets/82749269-a719-470c-8d8b-fd66f05a250c" />
+
+fsa is a small real-time microphone processor. 
+takes a capture source, runs it through a processing chain and exposes the result as a virtual mic that
+Discord (or anything else) can select.
 
 ## Build / run (NixOS)
 
@@ -30,6 +31,10 @@ environment.systemPackages = [ inputs.fsa.packages.${pkgs.stdenv.hostPlatform.sy
 
 It needs PipeWire with the PulseAudio shim, since Discord sees inputs
 through it: `services.pipewire = { enable = true; pulse.enable = true; };`.
+
+The package installs a desktop entry, so fsa shows up as "fsa" in app
+launchers (rofi, wofi, fuzzel, ...). To start it with Hyprland, add
+`exec-once = fsa` to `hyprland.conf`.
 
 `--channel left|right|mix` selects which channel of the source is used
 (default `left`). The source is captured as stereo, so for an interface

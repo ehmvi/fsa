@@ -16,7 +16,7 @@ use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
 use super::knob::Knob;
-use super::{AMBER, GREEN, GREY};
+use super::theme::{self, BG, FAINT, GRID, INK, LINE, MUTED, SIGNAL, SURFACE};
 use crate::audio::SAMPLE_RATE;
 use crate::config::{AnalyzerMode, EqConfig};
 use crate::dsp::eq::{Band, EqParams, MAX_BANDS, default_bands};
@@ -35,12 +35,6 @@ const NODE_RADIUS: f32 = 8.0;
 const UNDO_DEPTH: usize = 100;
 
 type Slots = [Option<Band>; MAX_BANDS];
-
-pub fn band_color(i: usize) -> Color32 {
-    // spread hues so neighbouring slots differ clearly
-    let hue = (i as f32 * 0.381_966) % 1.0;
-    egui::ecolor::Hsva::new(hue, 0.62, 0.95, 1.0).into()
-}
 
 fn x_of(rect: Rect, f: f32) -> f32 {
     rect.left() + (f / F_MIN).ln() / (F_MAX / F_MIN).ln() * rect.width()
@@ -325,7 +319,7 @@ impl EqView {
     ) {
         let fs = SAMPLE_RATE as f32;
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(0x16, 0x19, 0x1e));
+        painter.rect_filled(rect, 0.0, BG);
 
         // columns: one per two pixels
         let cols = ((rect.width() / 2.0) as usize).max(2);
@@ -362,7 +356,7 @@ impl EqView {
                 &xs,
                 &ys,
                 |_| rect.bottom(),
-                Color32::from_rgba_unmultiplied(0x5a, 0x6e, 0x8c, 70),
+                INK.gamma_multiply(0.04),
             );
         }
         if show_post {
@@ -379,12 +373,12 @@ impl EqView {
                 &xs,
                 &ys,
                 |_| rect.bottom(),
-                Color32::from_rgba_unmultiplied(0x8c, 0xb4, 0xe6, 38),
+                INK.gamma_multiply(0.07),
             );
             let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
             painter.add(egui::Shape::line(
                 line,
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xa8, 0xc8, 0xf0, 110)),
+                Stroke::new(1.0, INK.gamma_multiply(0.2)),
             ));
         }
 
@@ -408,26 +402,21 @@ impl EqView {
                     *t += c;
                 }
             }
+            // only the band under focus gets its own curve; the total carries the rest
             let focus = self.selected == Some(i) || hit == Some(i);
-            if !b.on && !focus {
+            if !focus {
                 continue;
             }
-            let color = if b.on { band_color(i) } else { GREY };
+            let color = if b.on { SIGNAL } else { FAINT };
             let ys: Vec<f32> = curve.iter().map(|&c| self.y_of(rect, clamp(c))).collect();
-            fill_between(
-                &painter,
-                &xs,
-                &ys,
-                |_| y0,
-                color.gamma_multiply(if focus { 0.28 } else { 0.10 }),
-            );
-            if focus {
-                let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
-                painter.add(egui::Shape::line(
-                    line,
-                    Stroke::new(1.0, color.gamma_multiply(0.8)),
-                ));
-            }
+            fill_between(&painter, &xs, &ys, |_| y0, color.gamma_multiply(0.14));
+            let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
+            painter.add(egui::Shape::dashed_line(
+                &line,
+                Stroke::new(1.0, color.gamma_multiply(0.8)),
+                4.0,
+                3.0,
+            ));
             // dynamic bands: shade the span the dynamics can move through
             if b.is_dynamic() && focus {
                 let lo = b.design(b.gain, fs);
@@ -443,15 +432,11 @@ impl EqView {
                 fill_between(&painter, &xs, &ya, |c| yb[c], color.gamma_multiply(0.12));
             }
         }
-        let line: Vec<Pos2> = xs
-            .iter()
-            .zip(&total)
-            .map(|(&x, &db)| pos2(x, self.y_of(rect, clamp(db))))
-            .collect();
-        painter.add(egui::Shape::line(
-            line,
-            Stroke::new(2.0, Color32::from_rgb(0xf4, 0xe6, 0xb8)),
-        ));
+        let ys: Vec<f32> = total.iter().map(|&db| self.y_of(rect, clamp(db))).collect();
+        fill_between(&painter, &xs, &ys, |_| y0, SIGNAL.gamma_multiply(0.09));
+        let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
+        painter.add(egui::Shape::line(line, Stroke::new(2.5, SIGNAL)));
+        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
 
         self.nodes(ui, &painter, rect, params, bands, hit);
         self.graph_input(ui, rect, resp, params, bands, hit);
@@ -471,17 +456,17 @@ impl EqView {
                     note(f),
                     format_db(self.db_of(rect, p.y))
                 ),
-                egui::FontId::monospace(11.0),
-                Color32::from_gray(150),
+                theme::mono(11.0),
+                MUTED,
             );
         }
         if let Some(s) = params.solo() {
             painter.text(
                 rect.right_top() + vec2(-8.0, 6.0),
                 egui::Align2::RIGHT_TOP,
-                format!("SOLO band {}", s + 1),
-                egui::FontId::proportional(12.0),
-                AMBER,
+                format!("SOLO BAND {}", s + 1),
+                theme::mono(11.0),
+                SIGNAL,
             );
         }
         if bands.iter().all(Option::is_none) {
@@ -490,15 +475,15 @@ impl EqView {
                 egui::Align2::CENTER_CENTER,
                 "double-click to add a band",
                 egui::FontId::proportional(14.0),
-                Color32::from_gray(110),
+                MUTED,
             );
         }
     }
 
     fn grid(&self, painter: &egui::Painter, rect: Rect) {
-        let grid = Stroke::new(1.0, Color32::from_gray(38));
-        let label = Color32::from_gray(100);
-        let font = egui::FontId::proportional(10.0);
+        let grid = Stroke::new(1.0, GRID);
+        let label = MUTED;
+        let font = theme::mono(10.0);
         for f in [
             20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0,
             1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10_000.0, 20_000.0,
@@ -513,7 +498,7 @@ impl EqView {
                 if major {
                     grid
                 } else {
-                    Stroke::new(1.0, Color32::from_gray(29))
+                    Stroke::new(1.0, GRID.gamma_multiply(0.5))
                 },
             );
             if major {
@@ -547,7 +532,7 @@ impl EqView {
         while db <= self.range + 0.01 {
             let y = self.y_of(rect, db);
             let stroke = if db == 0.0 {
-                Stroke::new(1.0, Color32::from_gray(70))
+                Stroke::new(1.0, LINE)
             } else {
                 grid
             };
@@ -576,7 +561,7 @@ impl EqView {
                     egui::Align2::LEFT_CENTER,
                     format!("{db}"),
                     font.clone(),
-                    Color32::from_gray(70),
+                    FAINT,
                 );
             }
         }
@@ -611,7 +596,7 @@ impl EqView {
         for (i, b) in bands.iter().enumerate() {
             let Some(b) = b else { continue };
             let c = self.node_pos(rect, b);
-            let color = if b.on { band_color(i) } else { GREY };
+            let color = if b.on { SIGNAL } else { FAINT };
             if b.is_dynamic() {
                 let live = pos2(
                     c.x,
@@ -626,25 +611,23 @@ impl EqView {
             } else {
                 NODE_RADIUS
             };
+            // rings with the band number, filled when selected (as on the preview)
+            let selected = self.selected == Some(i);
+            if params.solo() == Some(i) {
+                painter.circle_stroke(c, r + 4.0, Stroke::new(1.5, INK));
+            }
             painter.circle(
                 c,
                 r,
-                color.gamma_multiply(if focus { 1.0 } else { 0.85 }),
-                Stroke::new(
-                    if self.selected == Some(i) { 2.0 } else { 1.0 },
-                    if params.solo() == Some(i) {
-                        AMBER
-                    } else {
-                        Color32::WHITE
-                    },
-                ),
+                if selected { color } else { BG },
+                Stroke::new(if focus { 2.5 } else { 2.0 }, color),
             );
             painter.text(
                 c,
                 egui::Align2::CENTER_CENTER,
                 format!("{}", i + 1),
-                egui::FontId::proportional(10.0),
-                Color32::BLACK,
+                theme::mono(10.5),
+                if selected { BG } else { color },
             );
             if hit == Some(i) || self.drag.as_ref().is_some_and(|d| d.band == i) {
                 let mut text = format!(
@@ -664,11 +647,7 @@ impl EqView {
                 }
                 let below = c.y < rect.top() + 70.0;
                 let at = c + vec2(0.0, if below { 16.0 } else { -16.0 });
-                let galley = ui.painter().layout_no_wrap(
-                    text,
-                    egui::FontId::proportional(11.0),
-                    Color32::from_gray(230),
-                );
+                let galley = ui.painter().layout_no_wrap(text, theme::mono(11.0), INK);
                 let size = galley.size() + vec2(10.0, 6.0);
                 let mut r = Rect::from_min_size(
                     pos2(
@@ -681,8 +660,14 @@ impl EqView {
                     (rect.left() - r.left()).max(0.0) + (rect.right() - r.right()).min(0.0),
                     0.0,
                 ));
-                painter.rect_filled(r, 4.0, Color32::from_black_alpha(200));
-                painter.galley(r.min + vec2(5.0, 3.0), galley, Color32::WHITE);
+                painter.rect(
+                    r,
+                    3.0,
+                    SURFACE,
+                    Stroke::new(1.0, LINE),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(r.min + vec2(5.0, 3.0), galley, INK);
             }
         }
     }
@@ -811,9 +796,9 @@ impl EqView {
                     return;
                 };
                 ui.label(
-                    RichText::new(format!("Band {}", i + 1))
-                        .color(band_color(i))
-                        .strong(),
+                    RichText::new(format!("BAND {:02}", i + 1))
+                        .font(theme::mono(12.0))
+                        .color(SIGNAL),
                 );
                 ui.separator();
                 for s in Shape::ALL {
@@ -884,7 +869,7 @@ impl EqView {
         };
         let Some(mut b) = params.band(i) else { return };
         let before = b;
-        let color = band_color(i);
+        let color = SIGNAL;
         ui.horizontal_wrapped(|ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -893,7 +878,7 @@ impl EqView {
                     if ui.small_button("◀").clicked() {
                         self.selected = Some(used[(at + used.len() - 1) % used.len()]);
                     }
-                    ui.label(RichText::new(format!("Band {}", i + 1)).color(color).strong());
+                    ui.label(RichText::new(format!("BAND {:02}", i + 1)).font(theme::mono(12.0)).color(color));
                     if ui.small_button("▶").clicked() {
                         self.selected = Some(used[(at + 1) % used.len()]);
                     }
@@ -943,9 +928,7 @@ impl EqView {
             // dynamics
             ui.vertical(|ui| {
                 ui.add_enabled_ui(b.shape.has_gain(), |ui| {
-                    let (text, fill) = if b.dynamics.on { ("DYNAMIC", AMBER) } else { ("DYNAMIC", GREY) };
-                    if ui
-                        .add(egui::Button::new(RichText::new(text).small().strong().color(Color32::WHITE)).fill(fill))
+                    if super::pill(ui, "DYNAMIC", b.dynamics.on, false, 0.0)
                         .on_hover_text("move this band's gain with the level in its region (de-essing, taming resonances)")
                         .clicked()
                     {
@@ -959,10 +942,10 @@ impl EqView {
             if b.is_dynamic() {
                 let ms = |v: f32| format!("{v:.0} ms");
                 let d = &mut b.dynamics;
-                ui.add(Knob::new(&mut d.threshold, -80.0..=0.0, "THRESH", &|v| format!("{v:.1} dB")).default(-30.0).color(AMBER));
-                ui.add(Knob::new(&mut d.range, -filter::GAIN_MAX..=filter::GAIN_MAX, "RANGE", &format_db).default(-6.0).color(AMBER));
-                ui.add(Knob::new(&mut d.attack_ms, 0.5..=500.0, "ATTACK", &|v| format!("{v:.1} ms")).log().default(5.0).color(AMBER));
-                ui.add(Knob::new(&mut d.release_ms, 5.0..=2000.0, "RELEASE", &ms).log().default(100.0).color(AMBER));
+                ui.add(Knob::new(&mut d.threshold, -80.0..=0.0, "THRESH", &|v| format!("{v:.1} dB")).default(-30.0).color(SIGNAL));
+                ui.add(Knob::new(&mut d.range, -filter::GAIN_MAX..=filter::GAIN_MAX, "RANGE", &format_db).default(-6.0).color(SIGNAL));
+                ui.add(Knob::new(&mut d.attack_ms, 0.5..=500.0, "ATTACK", &|v| format!("{v:.1} ms")).log().default(5.0).color(SIGNAL));
+                ui.add(Knob::new(&mut d.release_ms, 5.0..=2000.0, "RELEASE", &ms).log().default(100.0).color(SIGNAL));
             }
             ui.separator();
             ui.vertical(|ui| {
@@ -970,9 +953,7 @@ impl EqView {
                     b.on = !b.on;
                 }
                 let solo = params.solo() == Some(i);
-                let fill = if solo { AMBER } else { GREY };
-                if ui
-                    .add(egui::Button::new(RichText::new("SOLO").small().strong().color(Color32::WHITE)).fill(fill))
+                if super::pill(ui, "SOLO", solo, false, 42.0)
                     .on_hover_text("listen to this band's region only")
                     .clicked()
                 {
@@ -991,7 +972,9 @@ impl EqView {
 
     fn bottom_bar(&mut self, ui: &mut Ui, params: &EqParams) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Analyzer");
+            // frameless text buttons keep the bar on one line at the default size
+            let text = |t: &str| egui::Button::new(RichText::new(t).color(MUTED)).frame(false);
+            super::caption(ui, "Analyzer");
             egui::ComboBox::from_id_salt("eq_analyzer")
                 .width(90.0)
                 .selected_text(analyzer_name(self.analyzer_mode))
@@ -1005,7 +988,7 @@ impl EqView {
                         ui.selectable_value(&mut self.analyzer_mode, m, analyzer_name(m));
                     }
                 });
-            ui.label("Range");
+            super::caption(ui, "Range");
             egui::ComboBox::from_id_salt("eq_range")
                 .width(70.0)
                 .selected_text(format!("±{} dB", self.range))
@@ -1014,8 +997,8 @@ impl EqView {
                         ui.selectable_value(&mut self.range, r, format!("±{r} dB"));
                     }
                 });
-            ui.separator();
-            ui.label("Output");
+            ui.add_space(6.0);
+            super::caption(ui, "Output");
             let mut out = params.output_gain.get();
             if ui
                 .add(
@@ -1030,23 +1013,23 @@ impl EqView {
             {
                 params.output_gain.set(out);
             }
-            ui.separator();
+            ui.add_space(6.0);
             if ui
-                .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
+                .add_enabled(!self.undo.is_empty(), text("Undo"))
                 .on_hover_text("undo (ctrl/cmd+z)")
                 .clicked()
             {
                 self.undo_redo(params, true);
             }
             if ui
-                .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo"))
+                .add_enabled(!self.redo.is_empty(), text("Redo"))
                 .on_hover_text("redo (shift+ctrl/cmd+z)")
                 .clicked()
             {
                 self.undo_redo(params, false);
             }
             if ui
-                .button("Reset")
+                .add(text("Reset"))
                 .on_hover_text("back to a single low cut")
                 .clicked()
             {
@@ -1060,7 +1043,11 @@ impl EqView {
                 self.selected = None;
             }
             let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
-            ui.label(RichText::new(format!("{n}/{MAX_BANDS} bands")).weak());
+            ui.label(
+                RichText::new(format!("{n}/{MAX_BANDS} bands"))
+                    .font(theme::mono(11.0))
+                    .color(MUTED),
+            );
         });
     }
 
@@ -1117,20 +1104,20 @@ fn analyzer_name(m: AnalyzerMode) -> &'static str {
 fn level_bar(ui: &mut Ui, level: f32, threshold: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(72.0, 8.0), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, Color32::from_gray(30));
+    painter.rect_filled(rect, 2.0, theme::DEEP);
     let x = |db: f32| rect.left() + ((db + 80.0) / 80.0).clamp(0.0, 1.0) * rect.width();
     let over = level > threshold;
     painter.rect_filled(
         Rect::from_min_max(rect.min, pos2(x(level), rect.bottom())),
         2.0,
-        if over { AMBER } else { GREEN },
+        if over { SIGNAL } else { MUTED },
     );
     painter.line_segment(
         [
             pos2(x(threshold), rect.top() - 2.0),
             pos2(x(threshold), rect.bottom() + 2.0),
         ],
-        Stroke::new(2.0, Color32::WHITE),
+        Stroke::new(2.0, INK),
     );
 }
 

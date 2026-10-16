@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use egui::{RichText, Ui};
 
-use super::{GREEN, GREY};
+use super::theme::{MUTED, SIGNAL};
 use crate::dsp::gate::GateParams;
 
 /// returns true if any parameter changed
@@ -13,13 +13,13 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
     let before = s;
     let open = params.open.load(Ordering::Relaxed);
     ui.horizontal(|ui| {
-        ui.label("state:");
+        super::caption(ui, "state");
         let (t, c) = if open {
-            ("OPEN", GREEN)
+            ("OPEN", SIGNAL)
         } else {
-            ("CLOSED", GREY)
+            ("CLOSED", MUTED)
         };
-        ui.label(RichText::new(t).strong().color(c));
+        ui.label(RichText::new(t).font(super::theme::mono(12.5)).color(c));
     });
     ui.add_space(6.0);
     egui::Grid::new("gate")

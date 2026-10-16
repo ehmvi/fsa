@@ -101,7 +101,8 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "fsa",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            ui::theme::install(&cc.egui_ctx);
             Ok(Box::new(App::new(
                 shared,
                 backend,

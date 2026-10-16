@@ -5,6 +5,8 @@ use std::ops::RangeInclusive;
 
 use egui::{Color32, Response, Sense, Stroke, Ui, Widget, pos2, vec2};
 
+use super::theme::{self, GRID, INK, MUTED, SIGNAL, SURFACE_HI};
+
 const START: f32 = std::f32::consts::PI * 0.75;
 const SWEEP: f32 = std::f32::consts::PI * 1.5;
 
@@ -32,7 +34,7 @@ impl<'a> Knob<'a> {
             label,
             default,
             log: false,
-            color: Color32::from_rgb(0x6c, 0xb4, 0xe8),
+            color: SIGNAL,
             format,
         }
     }
@@ -103,12 +105,12 @@ impl Widget for Knob<'_> {
 
         let painter = ui.painter_at(rect.expand(2.0));
         let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.35) };
-        let text = dim(Color32::from_gray(170));
+        let text = dim(MUTED);
         painter.text(
             pos2(rect.center().x, rect.top()),
             egui::Align2::CENTER_TOP,
             self.label,
-            egui::FontId::proportional(10.0),
+            theme::mono(10.0),
             text,
         );
         let c = pos2(rect.center().x, rect.top() + 32.0);
@@ -122,10 +124,7 @@ impl Widget for Knob<'_> {
                 })
                 .collect()
         };
-        painter.add(egui::Shape::line(
-            arc(0.0, 1.0),
-            Stroke::new(3.0, Color32::from_gray(48)),
-        ));
+        painter.add(egui::Shape::line(arc(0.0, 1.0), Stroke::new(3.0, GRID)));
         // bipolar ranges fill from the centre
         let (lo, hi) = (*self.range.start(), *self.range.end());
         let origin = if lo < 0.0 && hi > 0.0 {
@@ -139,19 +138,19 @@ impl Widget for Knob<'_> {
                 Stroke::new(3.0, dim(self.color)),
             ));
         }
-        painter.circle_filled(c, r - 4.0, dim(Color32::from_gray(58)));
+        painter.circle_filled(c, r - 4.0, dim(SURFACE_HI));
         let a = START + SWEEP * t;
         let dir = vec2(a.cos(), a.sin());
         painter.line_segment(
             [c + dir * 3.0, c + dir * (r - 5.0)],
-            Stroke::new(2.0, dim(Color32::from_gray(225))),
+            Stroke::new(2.0, dim(INK)),
         );
         painter.text(
             pos2(rect.center().x, rect.bottom()),
             egui::Align2::CENTER_BOTTOM,
             (self.format)(*self.value),
-            egui::FontId::proportional(11.0),
-            dim(Color32::from_gray(220)),
+            theme::mono(10.5),
+            dim(INK),
         );
         resp.on_hover_text("drag or scroll (shift: fine), double-click: reset")
     }

@@ -4,6 +4,8 @@ use std::time::Instant;
 
 use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
 
+use super::theme::{self, ALERT, DEEP, FAINT, INK, MUTED, SIGNAL};
+
 use crate::dsp::lin_to_db;
 
 const DB_MIN: f32 = -60.0;
@@ -46,18 +48,19 @@ impl Meter {
 
     pub fn show(&self, ui: &mut Ui, label: &str, height: f32) {
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).small().strong());
+            super::caption(ui, label);
             let (rect, _) = ui.allocate_exact_size(vec2(22.0, height), Sense::hover());
             let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, 2.0, Color32::from_gray(25));
+            painter.rect_filled(rect, 2.0, DEEP);
             let y = |db: f32| rect.bottom() - (db - DB_MIN) / -DB_MIN * rect.height();
 
-            // coloured segments: green up to -18, yellow up to -6, red above
+            // segments: cream up to -18, amber up to -6, red above
             let level = self.level_db;
+            let cream: Color32 = INK.gamma_multiply(0.75);
             for (lo, hi, color) in [
-                (DB_MIN, -18.0, Color32::from_rgb(0x2e, 0xa0, 0x43)),
-                (-18.0, -6.0, Color32::from_rgb(0xd9, 0xc2, 0x1f)),
-                (-6.0, 0.0, Color32::from_rgb(0xd9, 0x3b, 0x2f)),
+                (DB_MIN, -18.0, cream),
+                (-18.0, -6.0, SIGNAL),
+                (-6.0, 0.0, ALERT),
             ] {
                 if level > lo {
                     let top = y(level.min(hi));
@@ -75,14 +78,14 @@ impl Meter {
                 let hy = y(self.hold_db.min(0.0));
                 painter.line_segment(
                     [pos2(rect.left(), hy), pos2(rect.right(), hy)],
-                    Stroke::new(2.0, Color32::WHITE),
+                    Stroke::new(2.0, INK),
                 );
             }
             for db in [-48.0, -36.0, -24.0, -12.0, -6.0] {
                 let ty = y(db);
                 painter.line_segment(
                     [pos2(rect.left(), ty), pos2(rect.left() + 4.0, ty)],
-                    Stroke::new(1.0, Color32::from_gray(140)),
+                    Stroke::new(1.0, FAINT),
                 );
             }
             let text = if self.hold_db <= DB_MIN {
@@ -90,7 +93,11 @@ impl Meter {
             } else {
                 format!("{:.0}", self.hold_db)
             };
-            ui.label(egui::RichText::new(text).small().monospace());
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::mono(11.0))
+                    .color(MUTED),
+            );
         });
     }
 }

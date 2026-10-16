@@ -67,6 +67,29 @@
             ++ lib.optionals isLinux [
               pkgs.rustPlatform.bindgenHook
               pkgs.makeWrapper
+              pkgs.copyDesktopItems
+            ];
+            # app launcher entry; StartupWMClass matches the wayland app id
+            desktopItems = lib.optionals isLinux [
+              (pkgs.makeDesktopItem {
+                name = "fsa";
+                desktopName = "fsa";
+                genericName = "Microphone Processor";
+                comment = "Clean up your mic and send it to a virtual \"Mic (processed)\" input";
+                exec = "fsa";
+                icon = "audio-input-microphone";
+                startupWMClass = "fsa";
+                categories = [
+                  "AudioVideo"
+                  "Audio"
+                ];
+                keywords = [
+                  "mic"
+                  "microphone"
+                  "eq"
+                  "noise"
+                ];
+              })
             ];
             buildInputs = lib.optionals isLinux (
               with pkgs;
