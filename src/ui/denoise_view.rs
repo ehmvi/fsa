@@ -9,7 +9,7 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
     let mut s = params.get();
     let before = s;
     ui.label(
-        RichText::new("RNNoise neural noise suppression. Adds a fixed 10 ms of latency.").weak(),
+        RichText::new("RNNoise neural noise suppression. Adds a fixed 20 ms of latency.").weak(),
     );
     ui.add_space(6.0);
     let vad = params.vad.get();

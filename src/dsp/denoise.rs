@@ -2,7 +2,8 @@
 //! voice-activity gate.
 //!
 //! rnnoise works on fixed 480-sample (10 ms) frames, so this unit buffers
-//! one frame: constant 10 ms latency, the dry signal is delayed to match.
+//! one frame, and rnnoise's own output lags its input by another frame:
+//! constant 20 ms latency, the dry signal is delayed to match.
 //!
 //! real-time note: nnnoiseless keeps its fft plans and scratch buffers in
 //! thread-local caches, so the very first frame processed on the audio
@@ -69,8 +70,11 @@ impl DenoiseParams {
 pub struct Denoise {
     params: Arc<DenoiseParams>,
     state: Box<DenoiseState<'static>>,
-    /// input collected for the next frame (also the delayed dry signal)
+    /// input collected for the next frame
     input: [f32; FRAME],
+    /// previous frame's input. rnnoise's output lags its input by one frame,
+    /// so this is the dry signal that lines up with `wet`
+    prev: [f32; FRAME],
     /// output of the previous frame, played back while the next one fills
     output: [f32; FRAME],
     scaled: [f32; FRAME],
@@ -86,6 +90,7 @@ impl Denoise {
             params,
             state: DenoiseState::new(),
             input: [0.0; FRAME],
+            prev: [0.0; FRAME],
             output: [0.0; FRAME],
             scaled: [0.0; FRAME],
             wet: [0.0; FRAME],
@@ -97,6 +102,7 @@ impl Denoise {
 
     pub fn reset(&mut self) {
         self.input = [0.0; FRAME];
+        self.prev = [0.0; FRAME];
         self.output = [0.0; FRAME];
         self.pos = 0;
         self.gate = 1.0;
@@ -136,11 +142,12 @@ impl Denoise {
         // ramp the gate linearly across the frame to avoid clicks
         let step = (target - self.gate) / FRAME as f32;
         for i in 0..FRAME {
-            let dry = self.input[i];
+            let dry = self.prev[i];
             let wet = self.wet[i] / SCALE;
             self.gate += step;
             self.output[i] = (dry + (wet - dry) * s.strength) * self.gate;
         }
+        self.prev = self.input;
         self.gate = target;
     }
 }
@@ -161,21 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_one_frame_when_dry() {
+    fn latency_is_two_frames_when_dry() {
         let params = Arc::new(DenoiseParams::new(&DenoiseSettings {
             strength: 0.0,
             vad_threshold: 0.0,
         }));
         let mut d = Denoise::new(params);
-        let mut buf: Vec<f32> = (0..FRAME * 3).map(|i| (i as f32 * 0.01).sin()).collect();
+        let mut buf: Vec<f32> = (0..FRAME * 4).map(|i| (i as f32 * 0.01).sin()).collect();
         let orig = buf.clone();
         // odd block sizes, like pipewire quanta
         for chunk in buf.chunks_mut(256) {
             d.process(chunk);
         }
-        assert!(buf[..FRAME].iter().all(|&s| s == 0.0));
-        for i in FRAME..FRAME * 3 {
-            assert!((buf[i] - orig[i - FRAME]).abs() < 1e-6);
+        assert!(buf[..2 * FRAME].iter().all(|&s| s == 0.0));
+        for i in 2 * FRAME..FRAME * 4 {
+            assert!((buf[i] - orig[i - 2 * FRAME]).abs() < 1e-6);
         }
     }
 
@@ -207,6 +214,35 @@ mod tests {
         let before = rms(&buf[48_000..]);
         d.process(&mut buf);
         assert!((rms(&buf[48_000..]) / before - 1.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn dry_and_wet_are_aligned() {
+        // a pure tone passes through rnnoise almost unchanged, so a 50% mix
+        // only matches the fully wet output if dry and wet line up
+        let tone: Vec<f32> = (0..48_000 * 2)
+            .map(|i| 0.2 * (i as f32 * std::f32::consts::TAU * 220.0 / 48_000.0).sin())
+            .collect();
+        let run = |strength| {
+            let params = Arc::new(DenoiseParams::new(&DenoiseSettings {
+                strength,
+                vad_threshold: 0.0,
+            }));
+            let mut d = Denoise::new(params);
+            let mut buf = tone.clone();
+            for chunk in buf.chunks_mut(256) {
+                d.process(chunk);
+            }
+            buf
+        };
+        let (half, full) = (run(0.5), run(1.0));
+        let diff: Vec<f32> = half[48_000..]
+            .iter()
+            .zip(&full[48_000..])
+            .map(|(a, b)| a - b)
+            .collect();
+        let ratio = rms(&diff) / rms(&full[48_000..]);
+        assert!(ratio < 0.2, "misaligned: {ratio}");
     }
 
     #[test]

@@ -112,7 +112,8 @@ quantum is 256 frames at 48 kHz.
 - **Noise suppression**: RNNoise (via the pure-Rust `nnnoiseless`) with
   a strength (dry/wet) control and an optional voice gate that mutes the
   output while RNNoise's speech probability is below a threshold. It
-  works on 10 ms frames, so it adds a fixed 10 ms of latency. Note:
+  works on 10 ms frames and its output trails by one more, so it adds a
+  fixed 20 ms of latency. Note:
   nnnoiseless sets up its FFT plans lazily, so the first denoised frame
   allocates once on the audio thread; nothing allocates after that.
 - **Equalizer** (modelled on FabFilter Pro-Q), zero latency:
