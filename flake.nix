@@ -27,27 +27,6 @@
           libxi
           libxrandr
         ];
-
-      # minimal bundle so macos asks for microphone access with a reason
-      infoPlist = version: ''
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>CFBundleName</key><string>fsa</string>
-          <key>CFBundleDisplayName</key><string>fsa</string>
-          <key>CFBundleIdentifier</key><string>io.github.ehmvi.fsa</string>
-          <key>CFBundleExecutable</key><string>fsa</string>
-          <key>CFBundlePackageType</key><string>APPL</string>
-          <key>CFBundleShortVersionString</key><string>${version}</string>
-          <key>CFBundleVersion</key><string>${version}</string>
-          <key>LSMinimumSystemVersion</key><string>11.0</string>
-          <key>NSHighResolutionCapable</key><true/>
-          <key>NSMicrophoneUsageDescription</key>
-          <string>fsa processes your microphone and plays the result into a virtual audio device.</string>
-        </dict>
-        </plist>
-      '';
     in
     {
       packages = forAll (
@@ -115,7 +94,8 @@
                 mkdir -p $app/MacOS
                 mv $out/bin/fsa $app/MacOS/fsa
                 ln -s $app/MacOS/fsa $out/bin/fsa
-                cp ${pkgs.writeText "Info.plist" (infoPlist finalAttrs.version)} $app/Info.plist
+                # the plist also gives macos a reason to show when asking for the mic
+                cp ${pkgs.replaceVars ./assets/macos/Info.plist { inherit (finalAttrs) version; }} $app/Info.plist
               '';
             meta = {
               description = "real-time microphone processor with a virtual mic output";

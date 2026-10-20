@@ -1,0 +1,114 @@
+# push a tag like v0.1.0 to build fsa and publish a release with an
+# AppImage (x86_64 linux) and a zipped fsa.app (apple silicon)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # pipewire >= 0.3.49 is needed (Cargo.toml), 22.04 ships 0.3.48
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          test "v$version" = "$GITHUB_REF_NAME" || {
+            echo "tag $GITHUB_REF_NAME but Cargo.toml says $version" >&2
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libclang-dev libpipewire-0.3-dev liblilv-dev libx11-dev
+
+      - run: cargo build --release --locked
+
+      - name: build the AppImage
+        env:
+          # the runner has no fuse
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          cat > fsa.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=fsa
+          GenericName=Microphone Processor
+          Comment=Clean up your mic and send it to a virtual "Mic (processed)" input
+          Exec=fsa
+          Icon=fsa
+          StartupWMClass=fsa
+          Categories=AudioVideo;Audio;
+          Keywords=mic;microphone;eq;noise;
+          EOF
+          # libpipewire has to match the user's pipewire, so it comes from the host,
+          # like the gl/wayland libs egui dlopens
+          ./linuxdeploy --appdir AppDir \
+            --executable target/release/fsa \
+            --desktop-file fsa.desktop \
+            --icon-file assets/fsa.svg \
+            --exclude-library 'libpipewire-0.3.so*' \
+            --output appimage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          # linuxdeploy names it after the desktop entry and the arch
+          path: fsa-x86_64.AppImage
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-14
+    env:
+      # matches LSMinimumSystemVersion in assets/macos/Info.plist
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo build --release --locked
+
+      - name: build fsa.app
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          mkdir -p fsa.app/Contents/MacOS
+          cp target/release/fsa fsa.app/Contents/MacOS/fsa
+          sed "s/@version@/$version/g" assets/macos/Info.plist > fsa.app/Contents/Info.plist
+          # not notarized, but apple silicon refuses to run a bundle with no signature at all
+          codesign --force --deep --sign - fsa.app
+          ditto -c -k --keepParent fsa.app fsa-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: fsa-macos-arm64.zip
+          if-no-files-found: error
+
+  release:
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+            fsa-x86_64.AppImage fsa-macos-arm64.zip

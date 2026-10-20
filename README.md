@@ -6,19 +6,43 @@ fsa is a small real-time microphone processor.
 takes a capture source, runs it through a processing chain and exposes the result as a virtual mic that
 Discord (or anything else) can select.
 
-## Build / run (NixOS)
+## Install
+
+Builds for x86_64 Linux and Apple Silicon Macs are on the
+[releases page](https://github.com/ehmvi/fsa/releases/latest).
+
+**Linux**: download `fsa-x86_64.AppImage`, then
 
 ```sh
-nix develop          # rust toolchain, pipewire, libclang, wayland/gl libs
-cargo run --release -- --list               # show capture sources (node.name)
-cargo run --release -- --input <node.name>  # start the gui (input can also be picked there)
-
-nix build            # or: nix run
+chmod +x fsa-x86_64.AppImage && ./fsa-x86_64.AppImage
 ```
 
-The flake builds for x86_64/aarch64 Linux and aarch64 macOS (see below).
+It needs PipeWire with its PulseAudio shim (the default on current
+distros) and glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 or
+later). In Discord, pick **Mic (processed)** as the input device.
 
-To install it on NixOS, add the package; there's no module because fsa
+**macOS** (Apple Silicon, macOS 11 or later): fsa plays into the
+BlackHole virtual audio device, so install that first:
+
+```sh
+brew install --cask blackhole-2ch
+```
+
+Then unzip `fsa-macos-arm64.zip` and move `fsa.app` to Applications.
+The app isn't notarized, so macOS blocks the first launch: open
+System Settings → Privacy & Security and click **Open Anyway**, or run
+`xattr -dr com.apple.quarantine /Applications/fsa.app`. In Discord, pick
+**BlackHole 2ch** as the input device.
+
+**Nix**: `nix run github:ehmvi/fsa`. On NixOS and macOS that's all; on
+other Linux distros the nixpkgs OpenGL libs usually can't find your GPU
+driver, so use the AppImage (or [nixGL](https://github.com/nix-community/nixGL)).
+To install it for good, see [NixOS](#nixos) and
+[macOS (nix-darwin)](#macos-nix-darwin) below.
+
+## NixOS
+
+Add the package; there's no module because fsa
 creates its virtual mic as a normal PipeWire client, so nothing
 system-level is needed:
 
@@ -58,7 +82,7 @@ Add the flake's nix-darwin module. It installs fsa (as `fsa.app`, plus
 
 ```nix
 # flake.nix of your nix-darwin config
-inputs.fsa.url = "path:/path/to/fsa"; # or wherever the repo lives
+inputs.fsa.url = "github:ehmvi/fsa";
 # ...
 darwinConfigurations.<host> = nix-darwin.lib.darwinSystem {
   modules = [
@@ -77,9 +101,9 @@ module doesn't remove an installed driver; delete
 `/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` and run
 `sudo killall coreaudiod` to remove it.
 
-Without the module: `nix build .#blackhole`, copy
+Without the module: `nix build github:ehmvi/fsa#blackhole`, copy
 `result/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver` there yourself,
-then `nix run .` (or `nix develop` + `cargo run --release`).
+then `nix run github:ehmvi/fsa`.
 
 macOS has no PipeWire, and an app can't publish a virtual mic by itself.
 On macOS, fsa captures your input through CoreAudio, processes it, and
@@ -94,8 +118,29 @@ pick **BlackHole 2ch** as the input device.
   hold it steady.
 - **Test signal (no mic)** in the input list feeds a tone, which is handy
   for checking the routing without a mic.
-- The first run asks for microphone access for whichever app launched
-  fsa (e.g. your terminal).
+- The first run asks for microphone access, for `fsa.app` itself or,
+  when started from a shell, for whichever app launched it (e.g. your
+  terminal). The release build is only ad-hoc signed, so macOS may ask
+  again after an update.
+
+## Building from source
+
+```sh
+nix develop          # rust toolchain, pipewire, libclang, wayland/gl libs
+cargo run --release -- --list               # show capture sources (node.name)
+cargo run --release -- --input <node.name>  # start the gui (input can also be picked there)
+
+nix build            # or: nix run
+```
+
+The flake builds for x86_64/aarch64 Linux and aarch64 macOS. Without
+Nix you need a Rust toolchain, `pkg-config`, libclang and, on Linux, the
+PipeWire, lilv and X11 headers (Debian/Ubuntu: `libpipewire-0.3-dev
+liblilv-dev libx11-dev libclang-dev`).
+
+To publish a release, bump `version` in `Cargo.toml`, then tag and push
+(`git tag v0.2.0 && git push origin v0.2.0`). The release workflow
+builds the AppImage and `fsa.app` and attaches them to a GitHub release.
 
 ## How it works
 
