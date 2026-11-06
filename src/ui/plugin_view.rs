@@ -153,36 +153,69 @@ impl Browser {
 
     /// returns the plugin the user picked
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Choice> {
+        if !self.open {
+            return None;
+        }
         let mut picked = None;
-        let mut open = self.open;
-        egui::Window::new("Add plugin")
-            .open(&mut open)
-            .default_size([460.0, 480.0])
-            .collapsible(false)
+        let mut close = false;
+        let frame = super::theme::card()
+            .inner_margin(egui::Margin::same(20))
+            .shadow(ctx.global_style().visuals.window_shadow);
+        let modal = egui::Modal::new(egui::Id::new("add_plugin"))
+            .backdrop_color(egui::Color32::from_black_alpha(150))
+            .frame(frame)
             .show(ctx, |ui| {
+                ui.set_width(420.0);
+                // same header as the panels: title over the amber rule
                 ui.horizontal(|ui| {
+                    ui.vertical(|ui| super::title(ui, "Add plugin", false));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if super::close_button(ui)
+                            .on_hover_text("close (esc)")
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    // search field and rescan share one height and the full width
+                    let rescan_w = 76.0;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("filter…")
-                            .desired_width(280.0),
+                            .hint_text("Search by name, vendor or format…")
+                            .margin(egui::Margin::symmetric(10, 4))
+                            .min_size(egui::vec2(0.0, super::CONTROL_H))
+                            .desired_width(ui.available_width() - rescan_w),
                     );
-                    if ui.button("Rescan").clicked() {
+                    if super::ghost(ui, "Rescan", true, false)
+                        .on_hover_text("look for newly installed plugins")
+                        .clicked()
+                    {
                         self.plugins = None;
                         self.rescan_lv2 = true;
                     }
                 });
-                ui.collapsing("search paths", |ui| {
-                    for (format, paths) in [
-                        ("CLAP", search_paths()),
-                        ("LV2", crate::plugins::lv2::search_paths()),
-                    ] {
-                        ui.label(RichText::new(format).small().strong());
-                        for p in paths {
-                            let text = RichText::new(p.display().to_string()).small().monospace();
-                            ui.label(if p.is_dir() { text } else { text.weak() });
+                ui.add_space(4.0);
+                let caption = RichText::new("SEARCH PATHS")
+                    .font(super::theme::mono(10.5))
+                    .color(super::theme::MUTED);
+                egui::CollapsingHeader::new(caption)
+                    .id_salt("search_paths")
+                    .show(ui, |ui| {
+                        for (format, paths) in [
+                            ("CLAP", search_paths()),
+                            ("LV2", crate::plugins::lv2::search_paths()),
+                        ] {
+                            ui.label(RichText::new(format).small().strong());
+                            for p in paths {
+                                let text =
+                                    RichText::new(p.display().to_string()).small().monospace();
+                                ui.label(if p.is_dir() { text } else { text.weak() });
+                            }
                         }
-                    }
-                });
+                    });
                 ui.separator();
                 let Some(plugins) = &self.plugins else {
                     ui.horizontal(|ui| {
@@ -194,12 +227,25 @@ impl Browser {
                     return;
                 };
                 if plugins.is_empty() {
-                    ui.label("no plugins found in the search paths");
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("No plugins found")
+                                .size(14.0)
+                                .color(super::theme::INK),
+                        );
+                        ui.label(
+                            RichText::new("Install CLAP or LV2 plugins, then rescan.")
+                                .color(super::theme::MUTED),
+                        );
+                    });
+                    ui.add_space(24.0);
                     return;
                 }
                 let filter = self.filter.to_lowercase();
                 egui::ScrollArea::vertical()
-                    .auto_shrink(false)
+                    .auto_shrink([false, true])
+                    .max_height(320.0)
                     .show(ui, |ui| {
                         for p in plugins.iter().filter(|p| {
                             filter.is_empty()
@@ -227,7 +273,9 @@ impl Browser {
                         }
                     });
             });
-        self.open = open && picked.is_none();
+        if close || modal.should_close() || picked.is_some() {
+            self.open = false;
+        }
         picked
     }
 }

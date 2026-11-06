@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("fsa")
             .with_title("fsa – mic processor")
-            .with_inner_size([960.0, 640.0])
+            .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([680.0, 440.0]),
         // repaint is already timed (30/60 hz); vsync blocks when hidden on wayland
         glow_options: eframe::egui_glow::GlowConfiguration {

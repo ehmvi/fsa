@@ -1,6 +1,6 @@
 # finally simple audio
 
-<img width="1280" height="640" alt="social-preview-eq-v1" src="https://github.com/user-attachments/assets/82749269-a719-470c-8d8b-fd66f05a250c" />
+<img width="1280" height="640" alt="fsa: your mic, cleaned up in real time" src="assets/social-preview-ui-v1.png" />
 
 fsa is a small real-time microphone processor. 
 takes a capture source, runs it through a processing chain and exposes the result as a virtual mic that

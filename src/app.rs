@@ -266,33 +266,45 @@ fn chain_row(
 ) -> Option<RowAction> {
     let mut action = None;
     // buttons first (right to left) so the name truncates in the space that's left
-    let size = egui::vec2(ui.available_width(), 26.0);
+    let size = egui::vec2(ui.available_width(), 28.0);
     ui.allocate_ui_with_layout(
         size,
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
-            let icon = |t: &str| egui::Button::new(RichText::new(t).color(MUTED)).frame(false);
-            if matches!(
-                item.kind,
-                ItemKind::Plugin { .. } | ItemKind::Lv2 { .. } | ItemKind::Missing(_)
-            ) && ui
-                .add(icon("🗙"))
-                .on_hover_text("remove from chain")
-                .clicked()
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let tint = if selected { MUTED } else { FAINT };
+            let icon = |t: &str| {
+                egui::Button::new(RichText::new(t).size(11.0).color(tint))
+                    .frame(false)
+                    .min_size(egui::vec2(18.0, 20.0))
+            };
+            // row tools only on the hovered row, so names get the room
+            let hot = ui.rect_contains_pointer(ui.max_rect().expand(6.0));
+            if hot
+                && matches!(
+                    item.kind,
+                    ItemKind::Plugin { .. } | ItemKind::Lv2 { .. } | ItemKind::Missing(_)
+                )
+                && ui
+                    .add(icon("🗙"))
+                    .on_hover_text("remove from chain")
+                    .clicked()
             {
                 action = Some(RowAction::Remove(i));
             }
-            if ui
-                .add_enabled(i + 1 < len, icon("⏷"))
-                .on_hover_text("move down")
-                .clicked()
+            if hot
+                && ui
+                    .add_enabled(i + 1 < len, icon("⏷"))
+                    .on_hover_text("move down")
+                    .clicked()
             {
                 action = Some(RowAction::Move(i, 1));
             }
-            if ui
-                .add_enabled(i > 0, icon("⏶"))
-                .on_hover_text("move up")
-                .clicked()
+            if hot
+                && ui
+                    .add_enabled(i > 0, icon("⏶"))
+                    .on_hover_text("move up")
+                    .clicked()
             {
                 action = Some(RowAction::Move(i, -1));
             }
@@ -309,21 +321,23 @@ fn chain_row(
                 }
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
                 let missing = matches!(item.kind, ItemKind::Missing(_));
-                let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(11.0));
-                ui.label(index.color(if selected { SIGNAL } else { FAINT }));
+                let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(10.5));
+                ui.label(index.color(if selected { SIGNAL } else { theme::SUBTLE }));
                 if ui
                     .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
                     .inner
                 {
                     item.state.enabled.store(!item.enabled(), Ordering::Relaxed);
                 }
-                let color = match (missing, item.enabled()) {
-                    (true, _) => ALERT,
-                    (false, true) => INK,
-                    (false, false) => MUTED,
+                let color = match (missing, item.enabled(), selected) {
+                    (true, _, _) => ALERT,
+                    (false, true, true) => INK,
+                    (false, true, false) => INK.gamma_multiply(0.88),
+                    (false, false, _) => MUTED,
                 };
-                let label = RichText::new(item.name()).size(14.5).color(color);
+                let label = RichText::new(item.name()).size(13.5).color(color);
                 let resp = ui.add(egui::Button::new(label).frame(false).truncate());
                 if resp.on_hover_text(item.name()).clicked() {
                     action = Some(RowAction::Select);
@@ -559,17 +573,20 @@ impl App {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             // wordmark, as on the preview
-            let resp = ui.label(RichText::new("fsa").font(theme::bold(26.0)).color(INK));
+            let resp = ui.label(RichText::new("fsa").font(theme::bold(25.0)).color(INK));
             let r = resp.rect;
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(r.left() + 1.0, r.bottom() + 1.0),
                     egui::vec2(18.0, 3.0),
                 ),
-                0.0,
+                1.5,
                 SIGNAL,
             );
-            ui.add_space(14.0);
+            ui.add_space(18.0);
+            let (div, _) = ui.allocate_exact_size(egui::vec2(1.0, 22.0), egui::Sense::hover());
+            ui.painter().rect_filled(div, 0.0, LINE);
+            ui.add_space(12.0);
             caption(ui, "Input");
             let devices = self.shared.devices.lock().unwrap().clone();
             if let Some(p) = device_combo(ui, "input", &self.input, &devices, "System default")
@@ -615,7 +632,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let bypass = self.shared.bypass.load(Ordering::Relaxed);
                 let text = if bypass { "BYPASSED" } else { "ACTIVE" };
-                if ui::pill(ui, text, !bypass, true, 96.0)
+                if ui::chip(ui, text, !bypass, 104.0, egui::Sense::click())
                     .on_hover_text("global bypass: output = raw input")
                     .clicked()
                 {
@@ -626,53 +643,82 @@ impl App {
     }
 
     fn chain_list(&mut self, ui: &mut egui::Ui) {
-        caption(ui, "Chain").on_hover_text("processing order, top to bottom");
-        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            caption(ui, "Chain").on_hover_text("processing order, top to bottom");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let on = self.chain.iter().filter(|c| c.enabled()).count();
+                ui.label(
+                    RichText::new(format!("{on}/{} on", self.chain.len()))
+                        .font(theme::mono(10.5))
+                        .color(theme::SUBTLE),
+                );
+            });
+        });
+        ui.add_space(4.0);
         let mut action = None;
         let len = self.chain.len();
         egui::ScrollArea::vertical()
-            .max_height(ui.available_height() - 40.0)
+            .max_height(ui.available_height() - 48.0)
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
                 for (i, item) in self.chain.iter().enumerate() {
                     let selected = self.selected == Some(item.id);
-                    let fill = if selected {
-                        SURFACE
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let frame = egui::Frame::new()
-                        .fill(fill)
-                        .corner_radius(3.0)
-                        .inner_margin(egui::Margin::symmetric(8, 6))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            if let Some(a) = chain_row(ui, item, i, len, selected) {
-                                match a {
-                                    RowAction::Select => self.selected = Some(item.id),
-                                    other => action = Some(other),
-                                }
+                    let mut frame = egui::Frame::new()
+                        .corner_radius(9.0)
+                        // always 1 px so the layout is the same with or without an outline
+                        .stroke(Stroke::new(1.0, Color32::TRANSPARENT))
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 6,
+                            top: 6,
+                            bottom: 6,
+                        })
+                        .begin(ui);
+                    {
+                        let ui = &mut frame.content_ui;
+                        ui.set_width(ui.available_width());
+                        if let Some(a) = chain_row(ui, item, i, len, selected) {
+                            match a {
+                                RowAction::Select => self.selected = Some(item.id),
+                                other => action = Some(other),
                             }
-                        });
-                    let r = frame.response.rect;
+                        }
+                    }
+                    let rect = frame.content_ui.min_rect() + frame.frame.inner_margin;
+                    let hovered = ui.rect_contains_pointer(rect);
+                    (frame.frame.fill, frame.frame.stroke) = if selected {
+                        (SURFACE, Stroke::new(1.0, LINE))
+                    } else if hovered {
+                        (
+                            SURFACE.gamma_multiply(0.6),
+                            Stroke::new(1.0, Color32::TRANSPARENT),
+                        )
+                    } else {
+                        (Color32::TRANSPARENT, Stroke::new(1.0, Color32::TRANSPARENT))
+                    };
+                    let r = frame.end(ui).rect;
                     if selected {
                         ui.painter().rect_filled(
                             egui::Rect::from_min_max(
-                                r.left_top(),
-                                egui::pos2(r.left() + 3.0, r.bottom()),
+                                egui::pos2(r.left() + 4.0, r.top() + 9.0),
+                                egui::pos2(r.left() + 7.0, r.bottom() - 9.0),
                             ),
-                            0.0,
+                            1.5,
                             SIGNAL,
                         );
                     }
                 }
             });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         if ui
             .add(
-                egui::Button::new(RichText::new("+  Add plugin…").color(MUTED))
+                egui::Button::new(RichText::new("+   Add plugin").color(MUTED))
                     .stroke(Stroke::new(1.0, LINE))
-                    .fill(Color32::TRANSPARENT),
+                    .fill(Color32::TRANSPARENT)
+                    .corner_radius(9.0)
+                    .min_size(egui::vec2(ui.available_width(), 34.0)),
             )
+            .on_hover_text("add a CLAP or LV2 plugin to the end of the chain")
             .clicked()
         {
             self.browser.open = true;
@@ -700,14 +746,24 @@ impl App {
             return;
         };
         let item = &mut self.chain[index];
-        if !matches!(item.kind, ItemKind::Eq) {
+        let is_eq = matches!(item.kind, ItemKind::Eq);
+        if !is_eq {
             self.eq_view.hidden(&self.eq);
         }
+        let eq_view = &mut self.eq_view;
         ui.horizontal(|ui| {
             ui.vertical(|ui| ui::title(ui, &item.name(), !item.enabled()));
-            if !item.enabled() {
-                caption(ui, "off");
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.add_space(0.0);
+                if is_eq {
+                    eq_view.header_actions(ui);
+                    ui.add_space(6.0);
+                }
+                if !item.enabled() {
+                    ui::state_chip(ui, "BYPASSED", false)
+                        .on_hover_text("switch it on in the chain list");
+                }
+            });
         });
         ui.add_space(10.0);
         match &mut item.kind {
@@ -785,26 +841,45 @@ impl eframe::App for App {
 
         let bar = egui::Frame::new()
             .fill(theme::BG)
-            .inner_margin(egui::Margin::symmetric(14, 10));
+            .inner_margin(egui::Margin {
+                left: 13,
+                right: 12,
+                top: 12,
+                bottom: 10,
+            });
         egui::Panel::top("top")
             .frame(bar)
+            .show_separator_line(false)
             .show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::new()
                     .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(14, 5)),
+                    .inner_margin(egui::Margin::symmetric(14, 7)),
             )
+            .show_separator_line(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let status = self.shared.status.lock().unwrap().clone();
+                    let dot = if status.contains("error") {
+                        ALERT
+                    } else if status == "running" {
+                        theme::SUBTLE
+                    } else {
+                        FAINT
+                    };
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 3.5, dot);
                     ui.label(RichText::new(status).font(theme::mono(11.0)).color(MUTED));
                     let xruns = self.shared.xruns.load(Ordering::Relaxed);
                     if xruns > 0 {
                         ui.label(
-                            RichText::new(format!("· {xruns} underruns"))
-                                .font(theme::mono(11.0))
-                                .color(SIGNAL),
+                            RichText::new(format!(
+                                "· {xruns} underrun{}",
+                                if xruns == 1 { "" } else { "s" }
+                            ))
+                            .font(theme::mono(11.0))
+                            .color(SIGNAL),
                         );
                     }
                     if let Some(err) = &self.error {
@@ -817,29 +892,55 @@ impl eframe::App for App {
             });
         self.meter_in.update(self.shared.in_peak.take());
         self.meter_out.update(self.shared.out_peak.take());
-        let side = |x, y| {
+        // cards on the window background, 10 px apart. the gap is the panel's
+        // own margin and the card fills the rest, so panel widths stay put.
+        let gap = |left: i8, right: i8| {
             egui::Frame::new()
                 .fill(theme::BG)
+                .inner_margin(egui::Margin {
+                    left,
+                    right,
+                    top: 0,
+                    bottom: 0,
+                })
+        };
+        // a panel's max_rect is its current size; the card takes exactly that
+        let card = |ui: &mut egui::Ui, x: i8, y: i8, add: &mut dyn FnMut(&mut egui::Ui)| {
+            let size = ui.max_rect().size();
+            let inner = egui::vec2(size.x - 2.0 * x as f32 - 2.0, size.y - 2.0 * y as f32 - 2.0);
+            theme::card()
                 .inner_margin(egui::Margin::symmetric(x, y))
+                .show(ui, |ui| {
+                    ui.set_width(inner.x);
+                    ui.set_min_height(inner.y);
+                    add(ui);
+                });
         };
         egui::Panel::right("meters")
             .resizable(false)
-            .frame(side(12, 14))
+            .exact_size(120.0)
+            .show_separator_line(false)
+            .frame(gap(5, 12))
             .show(ui, |ui| {
-                let h = (ui.available_height() - 50.0).max(80.0);
-                ui.horizontal(|ui| {
-                    self.meter_in.show(ui, "IN", h);
-                    self.meter_out.show(ui, "OUT", h);
+                card(ui, 10, 14, &mut |ui| {
+                    let h = (ui.available_height() - 44.0).max(80.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui::meter::scale(ui, h);
+                        self.meter_in.show(ui, "IN", h);
+                        self.meter_out.show(ui, "OUT", h);
+                    });
                 });
             });
         egui::Panel::left("chain")
             .resizable(true)
-            .default_size(300.0)
-            .frame(side(12, 14))
-            .show(ui, |ui| self.chain_list(ui));
+            .show_separator_line(false)
+            .default_size(256.0)
+            .frame(gap(12, 5))
+            .show(ui, |ui| card(ui, 12, 14, &mut |ui| self.chain_list(ui)));
         egui::CentralPanel::default()
-            .frame(side(20, 16))
-            .show(ui, |ui| self.selected_panel(ui));
+            .frame(gap(5, 5))
+            .show(ui, |ui| card(ui, 24, 20, &mut |ui| self.selected_panel(ui)));
 
         match self.browser.show(ui.ctx()) {
             Some(Choice::Clap(info)) => self.add_plugin(&info),

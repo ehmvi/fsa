@@ -39,6 +39,8 @@ pub struct GateParams {
     pub range_db: AtomicF32,
     /// written by the audio thread, for the gui indicator
     pub open: AtomicBool,
+    /// detector peak since the gui last looked (linear), for its level bar
+    pub level: AtomicF32,
 }
 
 impl GateParams {
@@ -134,9 +136,11 @@ impl Gate {
 
     pub fn process(&mut self, buf: &mut [f32]) {
         self.update();
+        let mut peak = 0.0f32;
         for s in buf.iter_mut() {
             // peak envelope with ~10 ms decay
             self.env = s.abs().max(self.env * self.env_decay);
+            peak = peak.max(self.env);
             if self.env >= self.open_lin {
                 self.open = true;
                 self.hold = self.hold_samples;
@@ -156,6 +160,7 @@ impl Gate {
             *s *= self.gain;
         }
         self.params.open.store(self.open, Ordering::Relaxed);
+        self.params.level.raise(peak);
     }
 }
 
