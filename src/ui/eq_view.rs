@@ -16,7 +16,7 @@ use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 
 use super::knob::Knob;
-use super::theme::{self, BG, FAINT, GRID, INK, LINE, MUTED, SIGNAL, SURFACE};
+use super::theme::{self, DEEP, FAINT, GRID, INK, LINE, MUTED, SIGNAL, SURFACE};
 use crate::audio::SAMPLE_RATE;
 use crate::config::{AnalyzerMode, EqConfig};
 use crate::dsp::eq::{Band, EqParams, MAX_BANDS, default_bands};
@@ -279,9 +279,16 @@ impl EqView {
         self.graph_rect = rect;
         self.graph(ui, rect, &resp, params, &before);
         let top = ui.cursor().top();
-        ui.add_space(6.0);
-        self.band_strip(ui, params);
-        ui.add_space(4.0);
+        ui.add_space(10.0);
+        theme::well()
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                // same height with or without a band selected, so the graph doesn't jump
+                ui.set_min_height(108.0);
+                self.band_strip(ui, params);
+            });
+        ui.add_space(10.0);
         self.bottom_bar(ui, params);
         // the strip wraps on narrow windows; the graph gives way next frame
         let below = ui.cursor().top() - top + 4.0;
@@ -319,7 +326,7 @@ impl EqView {
     ) {
         let fs = SAMPLE_RATE as f32;
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, BG);
+        painter.rect_filled(rect, 10.0, DEEP);
 
         // columns: one per two pixels
         let cols = ((rect.width() / 2.0) as usize).max(2);
@@ -436,7 +443,7 @@ impl EqView {
         fill_between(&painter, &xs, &ys, |_| y0, SIGNAL.gamma_multiply(0.09));
         let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
         painter.add(egui::Shape::line(line, Stroke::new(2.5, SIGNAL)));
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+        painter.rect_stroke(rect, 10.0, Stroke::new(1.0, GRID), egui::StrokeKind::Inside);
 
         self.nodes(ui, &painter, rect, params, bands, hit);
         self.graph_input(ui, rect, resp, params, bands, hit);
@@ -482,8 +489,9 @@ impl EqView {
 
     fn grid(&self, painter: &egui::Painter, rect: Rect) {
         let grid = Stroke::new(1.0, GRID);
-        let label = MUTED;
+        let label = MUTED.gamma_multiply(0.8);
         let font = theme::mono(10.0);
+        let mut last_right = f32::NEG_INFINITY;
         for f in [
             20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0,
             1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10_000.0, 20_000.0,
@@ -513,6 +521,17 @@ impl EqView {
                 } else {
                     (x + 3.0, egui::Align2::LEFT_BOTTOM)
                 };
+                // skip labels that would run into the previous one on narrow graphs
+                let width = text.len() as f32 * 6.2;
+                let left = if align == egui::Align2::RIGHT_BOTTOM {
+                    at - width
+                } else {
+                    at
+                };
+                if left < last_right + 8.0 {
+                    continue;
+                }
+                last_right = left + width;
                 painter.text(
                     pos2(at, rect.bottom() - 3.0),
                     align,
@@ -619,7 +638,7 @@ impl EqView {
             painter.circle(
                 c,
                 r,
-                if selected { color } else { BG },
+                if selected { color } else { DEEP },
                 Stroke::new(if focus { 2.5 } else { 2.0 }, color),
             );
             painter.text(
@@ -627,7 +646,7 @@ impl EqView {
                 egui::Align2::CENTER_CENTER,
                 format!("{}", i + 1),
                 theme::mono(10.5),
-                if selected { BG } else { color },
+                if selected { DEEP } else { color },
             );
             if hit == Some(i) || self.drag.as_ref().is_some_and(|d| d.band == i) {
                 let mut text = format!(
@@ -854,55 +873,92 @@ impl EqView {
 
     fn band_strip(&mut self, ui: &mut Ui, params: &EqParams) {
         let Some(i) = self.selected else {
-            ui.allocate_ui(vec2(ui.available_width(), 80.0), |ui| {
-                ui.centered_and_justified(|ui| {
+            let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
+            ui.allocate_ui_with_layout(
+                vec2(ui.available_width(), 108.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.add_space(32.0);
+                    ui.label(
+                        RichText::new(format!("{n} of {MAX_BANDS} bands"))
+                            .font(theme::mono(11.0))
+                            .color(MUTED),
+                    );
                     ui.label(
                         RichText::new(
-                            "select a band, or double-click the graph to add one \
-                             (right-click for all shapes)",
+                            "Click a band to edit it · double-click to add · right-click for shapes",
                         )
-                        .weak(),
+                        .color(FAINT.gamma_multiply(1.4)),
                     );
-                });
-            });
+                },
+            );
             return;
         };
         let Some(mut b) = params.band(i) else { return };
         let before = b;
         let color = SIGNAL;
-        ui.horizontal_wrapped(|ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    let used: Vec<usize> = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).collect();
-                    let at = used.iter().position(|&k| k == i).unwrap_or(0);
-                    if ui.small_button("◀").clicked() {
-                        self.selected = Some(used[(at + used.len() - 1) % used.len()]);
-                    }
-                    ui.label(RichText::new(format!("BAND {:02}", i + 1)).font(theme::mono(12.0)).color(color));
-                    if ui.small_button("▶").clicked() {
-                        self.selected = Some(used[(at + 1) % used.len()]);
+        // header: which band and its shape, with its switches on the right
+        ui.horizontal(|ui| {
+            let used: Vec<usize> = (0..MAX_BANDS)
+                .filter(|&k| params.band(k).is_some())
+                .collect();
+            let at = used.iter().position(|&k| k == i).unwrap_or(0);
+            let arrow =
+                |t: &str| egui::Button::new(RichText::new(t).size(10.0).color(MUTED)).frame(false);
+            if ui.add(arrow("◀")).on_hover_text("previous band").clicked() {
+                self.selected = Some(used[(at + used.len() - 1) % used.len()]);
+            }
+            ui.label(
+                RichText::new(format!("BAND {:02}", i + 1))
+                    .font(theme::mono(11.5))
+                    .color(color),
+            );
+            if ui.add(arrow("▶")).on_hover_text("next band").clicked() {
+                self.selected = Some(used[(at + 1) % used.len()]);
+            }
+            ui.add_space(6.0);
+            egui::ComboBox::from_id_salt("eq_shape")
+                .width(92.0)
+                .selected_text(b.shape.name())
+                .show_ui(ui, |ui| {
+                    for s in Shape::ALL {
+                        ui.selectable_value(&mut b.shape, s, s.name());
                     }
                 });
-                egui::ComboBox::from_id_salt("eq_shape")
-                    .width(100.0)
-                    .selected_text(b.shape.name())
+            if b.shape.has_slope() {
+                egui::ComboBox::from_id_salt("eq_slope")
+                    .width(92.0)
+                    .selected_text(format!("{} dB/oct", b.slope))
                     .show_ui(ui, |ui| {
-                        for s in Shape::ALL {
-                            ui.selectable_value(&mut b.shape, s, s.name());
+                        for s in SLOPES {
+                            ui.selectable_value(&mut b.slope, s, format!("{s} dB/oct"));
                         }
                     });
-                ui.add_enabled_ui(b.shape.has_slope(), |ui| {
-                    egui::ComboBox::from_id_salt("eq_slope")
-                        .width(100.0)
-                        .selected_text(format!("{} dB/oct", b.slope))
-                        .show_ui(ui, |ui| {
-                            for s in SLOPES {
-                                ui.selectable_value(&mut b.slope, s, format!("{s} dB/oct"));
-                            }
-                        });
-                });
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(egui::Button::new(RichText::new("Delete").color(MUTED)).frame(false))
+                    .on_hover_text("remove this band (delete key)")
+                    .clicked()
+                {
+                    params.set_band(i, None);
+                    self.selected = None;
+                }
+                let solo = params.solo() == Some(i);
+                if super::pill(ui, "SOLO", solo, false, 48.0)
+                    .on_hover_text("listen to this band's region only")
+                    .clicked()
+                {
+                    params.set_solo((!solo).then_some(i));
+                }
+                if super::on_off(ui, b.on) {
+                    b.on = !b.on;
+                }
             });
-            ui.separator();
+        });
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
             ui.add(
                 Knob::new(&mut b.freq, filter::FREQ_MIN..=filter::FREQ_MAX, "FREQ", &format_freq)
                     .log()
@@ -927,6 +983,7 @@ impl EqView {
 
             // dynamics
             ui.vertical(|ui| {
+                ui.add_space(14.0);
                 ui.add_enabled_ui(b.shape.has_gain(), |ui| {
                     if super::pill(ui, "DYNAMIC", b.dynamics.on, false, 0.0)
                         .on_hover_text("move this band's gain with the level in its region (de-essing, taming resonances)")
@@ -936,7 +993,9 @@ impl EqView {
                     }
                 });
                 if b.is_dynamic() {
-                    level_bar(ui, params.level(i), b.dynamics.threshold);
+                    let t = |db: f32| (db + 80.0) / 80.0;
+                    let (level, thr) = (params.level(i), b.dynamics.threshold);
+                    super::level_bar(ui, 76.0, t(level), Some(t(thr)), level > thr);
                 }
             });
             if b.is_dynamic() {
@@ -947,23 +1006,6 @@ impl EqView {
                 ui.add(Knob::new(&mut d.attack_ms, 0.5..=500.0, "ATTACK", &|v| format!("{v:.1} ms")).log().default(5.0).color(SIGNAL));
                 ui.add(Knob::new(&mut d.release_ms, 5.0..=2000.0, "RELEASE", &ms).log().default(100.0).color(SIGNAL));
             }
-            ui.separator();
-            ui.vertical(|ui| {
-                if super::on_off(ui, b.on) {
-                    b.on = !b.on;
-                }
-                let solo = params.solo() == Some(i);
-                if super::pill(ui, "SOLO", solo, false, 42.0)
-                    .on_hover_text("listen to this band's region only")
-                    .clicked()
-                {
-                    params.set_solo((!solo).then_some(i));
-                }
-                if ui.small_button("Delete").clicked() {
-                    params.set_band(i, None);
-                    self.selected = None;
-                }
-            });
         });
         if b != before && params.band(i).is_some() {
             params.set_band(i, Some(b));
@@ -971,7 +1013,7 @@ impl EqView {
     }
 
     fn bottom_bar(&mut self, ui: &mut Ui, params: &EqParams) {
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             // frameless text buttons keep the bar on one line at the default size
             let text = |t: &str| egui::Button::new(RichText::new(t).color(MUTED)).frame(false);
             super::caption(ui, "Analyzer");
@@ -997,8 +1039,8 @@ impl EqView {
                         ui.selectable_value(&mut self.range, r, format!("±{r} dB"));
                     }
                 });
-            ui.add_space(6.0);
-            super::caption(ui, "Output");
+            ui.add_space(4.0);
+            super::caption(ui, "Out");
             let mut out = params.output_gain.get();
             if ui
                 .add(
@@ -1013,41 +1055,38 @@ impl EqView {
             {
                 params.output_gain.set(out);
             }
-            ui.add_space(6.0);
-            if ui
-                .add_enabled(!self.undo.is_empty(), text("Undo"))
-                .on_hover_text("undo (ctrl/cmd+z)")
-                .clicked()
-            {
-                self.undo_redo(params, true);
-            }
-            if ui
-                .add_enabled(!self.redo.is_empty(), text("Redo"))
-                .on_hover_text("redo (shift+ctrl/cmd+z)")
-                .clicked()
-            {
-                self.undo_redo(params, false);
-            }
-            if ui
-                .add(text("Reset"))
-                .on_hover_text("back to a single low cut")
-                .clicked()
-            {
-                for k in 0..MAX_BANDS {
-                    params.set_band(k, None);
+            // history on the right, in reading order
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if ui
+                    .add(text("Reset"))
+                    .on_hover_text("back to a single low cut")
+                    .clicked()
+                {
+                    for k in 0..MAX_BANDS {
+                        params.set_band(k, None);
+                    }
+                    for b in default_bands() {
+                        params.add_band(b);
+                    }
+                    params.output_gain.set(0.0);
+                    self.selected = None;
                 }
-                for b in default_bands() {
-                    params.add_band(b);
+                if ui
+                    .add_enabled(!self.redo.is_empty(), text("Redo"))
+                    .on_hover_text("redo (shift+ctrl/cmd+z)")
+                    .clicked()
+                {
+                    self.undo_redo(params, false);
                 }
-                params.output_gain.set(0.0);
-                self.selected = None;
-            }
-            let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
-            ui.label(
-                RichText::new(format!("{n}/{MAX_BANDS} bands"))
-                    .font(theme::mono(11.0))
-                    .color(MUTED),
-            );
+                if ui
+                    .add_enabled(!self.undo.is_empty(), text("Undo"))
+                    .on_hover_text("undo (ctrl/cmd+z)")
+                    .clicked()
+                {
+                    self.undo_redo(params, true);
+                }
+            });
         });
     }
 
@@ -1098,27 +1137,6 @@ fn analyzer_name(m: AnalyzerMode) -> &'static str {
         AnalyzerMode::Post => "Post",
         AnalyzerMode::PrePost => "Pre + Post",
     }
-}
-
-/// detector level with the threshold marked
-fn level_bar(ui: &mut Ui, level: f32, threshold: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(72.0, 8.0), Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::DEEP);
-    let x = |db: f32| rect.left() + ((db + 80.0) / 80.0).clamp(0.0, 1.0) * rect.width();
-    let over = level > threshold;
-    painter.rect_filled(
-        Rect::from_min_max(rect.min, pos2(x(level), rect.bottom())),
-        2.0,
-        if over { SIGNAL } else { MUTED },
-    );
-    painter.line_segment(
-        [
-            pos2(x(threshold), rect.top() - 2.0),
-            pos2(x(threshold), rect.bottom() + 2.0),
-        ],
-        Stroke::new(2.0, INK),
-    );
 }
 
 /// fills the area between two curves sampled at `xs`

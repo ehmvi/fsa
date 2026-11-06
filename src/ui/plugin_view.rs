@@ -155,16 +155,20 @@ impl Browser {
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Choice> {
         let mut picked = None;
         let mut open = self.open;
+        let center = ctx.content_rect().center();
         egui::Window::new("Add plugin")
             .open(&mut open)
-            .default_size([460.0, 480.0])
+            .default_size([440.0, 420.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(center)
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("filter…")
-                            .desired_width(280.0),
+                            .hint_text("Search by name, vendor or format…")
+                            .margin(egui::Margin::symmetric(10, 6))
+                            .desired_width(ui.available_width() - 90.0),
                     );
                     if ui.button("Rescan").clicked() {
                         self.plugins = None;
@@ -194,7 +198,15 @@ impl Browser {
                     return;
                 };
                 if plugins.is_empty() {
-                    ui.label("no plugins found in the search paths");
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("No plugins found").strong());
+                        ui.label(
+                            RichText::new("Install CLAP or LV2 plugins into one of the search paths, then rescan.")
+                                .color(super::theme::MUTED),
+                        );
+                    });
+                    ui.add_space(24.0);
                     return;
                 }
                 let filter = self.filter.to_lowercase();
