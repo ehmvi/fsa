@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
             "--list" | "-l" => list = true,
             "--help" | "-h" => {
                 println!(
-                    "usage: fsa [--input <node.name>] [--channel left|right|mix] [--config <path>] [--list]\n\
+                    "usage: fsa [--input <node.name>|auto|default] [--channel left|right|mix] [--config <path>] [--list]\n\
                      settings are stored in {}",
                     config::default_path().display()
                 );
@@ -56,8 +56,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut config = Config::load(&config_path);
-    if input.is_some() {
-        config.input = input;
+    if let Some(name) = input {
+        config.set_input_choice(&match name.as_str() {
+            "auto" => audio::InputChoice::Auto,
+            "default" => audio::InputChoice::Default,
+            _ => audio::InputChoice::Device(name),
+        });
     }
     if let Some(ch) = channel {
         config.input_channel = ch;
@@ -73,7 +77,7 @@ fn main() -> anyhow::Result<()> {
     let backend = audio::Backend::start(
         shared.clone(),
         engine,
-        config.input.clone(),
+        config.picker(),
         config.output.clone(),
     )?;
 

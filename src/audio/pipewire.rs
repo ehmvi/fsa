@@ -13,7 +13,9 @@
 //! through an rtrb ring. both streams share node.group so they run on the
 //! same driver and cannot drift apart.
 
+use std::cell::RefCell;
 use std::ffi::CString;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -26,7 +28,7 @@ use pw::spa::pod::Pod;
 use pw::stream::{StreamFlags, StreamRc, StreamState};
 
 use super::{
-    CAPTURE_NODE_NAME, Ctrl, Device, MAX_BLOCK, QUANTUM, SAMPLE_RATE, SOURCE_DESCRIPTION,
+    CAPTURE_NODE_NAME, Ctrl, Device, MAX_BLOCK, Picker, QUANTUM, SAMPLE_RATE, SOURCE_DESCRIPTION,
     SOURCE_NODE_NAME,
 };
 use crate::engine::Engine;
@@ -47,7 +49,7 @@ impl Backend {
     pub fn start(
         shared: Arc<Shared>,
         engine: Engine,
-        input: Option<String>,
+        picker: Picker,
         // pipewire publishes its own virtual source, there is no output to pick
         _output: Option<String>,
     ) -> anyhow::Result<Self> {
@@ -57,7 +59,7 @@ impl Backend {
             .name("pw-main".into())
             .spawn(move || {
                 let ready = ready_tx.clone();
-                if let Err(e) = run(shared.clone(), engine, input, rx, ready_tx) {
+                if let Err(e) = run(shared.clone(), engine, picker, rx, ready_tx) {
                     log::error!("pipewire: {e:#}");
                     shared.set_status(format!("pipewire error: {e:#}"));
                     let _ = ready.send(Err(format!("{e:#}")));
@@ -101,10 +103,42 @@ struct PlaybackData {
     priming: bool,
 }
 
+/// capture-source bookkeeping, lives on the pipewire main loop
+struct Inputs {
+    shared: Arc<Shared>,
+    picker: Picker,
+    /// what the capture stream's target.object is set to
+    active: Option<String>,
+    /// set once the initial node list is in; nodes after that are hotplugs
+    live: bool,
+    /// the capture stream and its format, once connected
+    capture: Option<(StreamRc, Vec<u8>)>,
+}
+
+impl Inputs {
+    /// points the capture at whatever the picker wants now
+    fn reconcile(&mut self) {
+        let target = self.picker.resolve(&self.shared);
+        if target == self.active {
+            return;
+        }
+        log::info!(
+            "switching input to {}",
+            target.as_deref().unwrap_or("the default source")
+        );
+        if let Some((capture, format)) = &self.capture
+            && let Err(e) = retarget(capture, target.as_deref(), format)
+        {
+            log::error!("switching input: {e:#}");
+        }
+        self.active = target;
+    }
+}
+
 fn run(
     shared: Arc<Shared>,
     engine: Engine,
-    input: Option<String>,
+    picker: Picker,
     rx: pw::channel::Receiver<Ctrl>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> anyhow::Result<()> {
@@ -116,11 +150,24 @@ fn run(
         .context("cannot connect to pipewire, is it running?")?;
     let registry = core.get_registry_rc().context("registry")?;
 
-    // track audio sources for the device picker
+    let inputs = Rc::new(RefCell::new(Inputs {
+        shared: shared.clone(),
+        picker,
+        active: None,
+        live: false,
+        capture: None,
+    }));
+    // device changes are handled on the next loop iteration, outside the
+    // registry callbacks
+    let (changed_tx, changed_rx) = pw::channel::channel::<()>();
+
+    // track audio sources for the device picker, and notice mics being plugged in
     let _registry_listener = registry
         .add_listener_local()
         .global({
             let shared = shared.clone();
+            let inputs = inputs.clone();
+            let changed = changed_tx.clone();
             move |global| {
                 if global.type_ != pw::types::ObjectType::Node {
                     return;
@@ -137,21 +184,77 @@ fn run(
                     .or_else(|| props.get("node.nick"))
                     .unwrap_or(name)
                     .to_string();
-                let mut devices = shared.devices.lock().unwrap();
-                devices.retain(|d| d.id != global.id);
-                devices.push(Device {
-                    id: global.id,
-                    name: name.to_string(),
-                    description,
-                });
-                devices.sort_by(|a, b| a.description.cmp(&b.description));
+                {
+                    let mut devices = shared.devices.lock().unwrap();
+                    devices.retain(|d| d.id != global.id);
+                    devices.push(Device {
+                        id: global.id,
+                        name: name.to_string(),
+                        description,
+                    });
+                    devices.sort_by(|a, b| a.description.cmp(&b.description));
+                }
+                let mut inputs = inputs.borrow_mut();
+                if !inputs.live {
+                    return;
+                }
+                // only real devices count as "plugged in": virtual sources made
+                // by other apps (echo cancel, loopbacks, ...) have no device.id
+                if props.get("device.id").is_some() {
+                    log::info!("mic plugged in: {name}");
+                    inputs.picker.remember(name);
+                }
+                let _ = changed.send(());
             }
         })
         .global_remove({
             let shared = shared.clone();
-            move |id| shared.devices.lock().unwrap().retain(|d| d.id != id)
+            let changed = changed_tx.clone();
+            move |id| {
+                let mut devices = shared.devices.lock().unwrap();
+                let before = devices.len();
+                devices.retain(|d| d.id != id);
+                if devices.len() != before {
+                    let _ = changed.send(());
+                }
+            }
         })
         .register();
+
+    // wait until the registry has listed every existing node, so the first
+    // connect already goes to the right mic and later nodes are hotplugs
+    let pending = core.sync(0).context("sync")?;
+    let _sync_listener = core
+        .add_listener_local()
+        .done({
+            let mainloop = mainloop.clone();
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    mainloop.quit();
+                }
+            }
+        })
+        .error({
+            let mainloop = mainloop.clone();
+            move |id, _seq, res, msg| {
+                log::error!("pipewire error on {id}: {msg} ({res})");
+                mainloop.quit();
+            }
+        })
+        .register();
+    mainloop.run();
+    drop(_sync_listener);
+    let initial = {
+        let mut inputs = inputs.borrow_mut();
+        inputs.live = true;
+        let target = inputs.picker.resolve(&shared);
+        inputs.active = target.clone();
+        target
+    };
+    log::info!(
+        "capturing from {}",
+        initial.as_deref().unwrap_or("the default source")
+    );
 
     let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RING);
     let latency = format!("{QUANTUM}/{SAMPLE_RATE}");
@@ -170,7 +273,7 @@ fn run(
         "node.link-group" => GROUP,
         "node.always-process" => "true",
     };
-    if let Some(target) = &input {
+    if let Some(target) = &initial {
         capture_props.insert(*pw::keys::TARGET_OBJECT, target.as_str());
     }
     let capture =
@@ -249,16 +352,22 @@ fn run(
         )
         .context("connect playback")?;
 
+    inputs.borrow_mut().capture = Some((capture.clone(), capture_format));
+
+    let _changed_rx = changed_rx.attach(mainloop.loop_(), {
+        let inputs = inputs.clone();
+        move |()| inputs.borrow_mut().reconcile()
+    });
     let _rx = rx.attach(mainloop.loop_(), {
         let mainloop = mainloop.clone();
-        let capture = capture.clone();
+        let inputs = inputs.clone();
         move |ctrl| match ctrl {
             Ctrl::Quit => mainloop.quit(),
-            Ctrl::SetInput(target) => {
-                log::info!("switching input to {target:?}");
-                if let Err(e) = retarget(&capture, target.as_deref(), &capture_format) {
-                    log::error!("switching input: {e:#}");
-                }
+            Ctrl::SetInput(choice) => {
+                log::info!("input choice: {choice:?}");
+                let mut inputs = inputs.borrow_mut();
+                inputs.picker.set_choice(choice);
+                inputs.reconcile();
             }
             Ctrl::SetOutput(_) => {}
         }

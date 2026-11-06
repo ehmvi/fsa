@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
+use crate::audio::{InputChoice, Picker};
 use crate::dsp::denoise::DenoiseSettings;
 use crate::dsp::eq::{Band, Dynamics, MAX_BANDS, default_bands};
 use crate::dsp::filter::Shape;
@@ -15,8 +16,14 @@ use crate::shared::InputChannel;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// node.name of the capture source; none = system default
+    /// how the capture source is chosen
+    pub input_mode: InputMode,
+    /// capture source picked by hand (node.name), used in `device` mode
     pub input: Option<String>,
+    /// mics most recently plugged in or picked, newest first; auto mode
+    /// uses the first one that's present
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_inputs: Vec<String>,
     /// macos: device the processed signal is played into (none = blackhole)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
@@ -32,7 +39,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            input_mode: InputMode::Auto,
             input: None,
+            recent_inputs: Vec::new(),
             output: None,
             input_channel: InputChannel::Left,
             bypass: false,
@@ -45,6 +54,40 @@ impl Default for Config {
             gate: GateConfig::default(),
             denoise: DenoiseConfig::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputMode {
+    /// follow the most recently plugged in mic
+    #[default]
+    Auto,
+    /// the system default source
+    Default,
+    /// the source in `input`
+    Device,
+}
+
+impl Config {
+    pub fn input_choice(&self) -> InputChoice {
+        match (self.input_mode, &self.input) {
+            (InputMode::Auto, _) => InputChoice::Auto,
+            (InputMode::Device, Some(name)) => InputChoice::Device(name.clone()),
+            (InputMode::Default | InputMode::Device, _) => InputChoice::Default,
+        }
+    }
+
+    pub fn set_input_choice(&mut self, choice: &InputChoice) {
+        (self.input_mode, self.input) = match choice {
+            InputChoice::Auto => (InputMode::Auto, None),
+            InputChoice::Default => (InputMode::Default, None),
+            InputChoice::Device(name) => (InputMode::Device, Some(name.clone())),
+        };
+    }
+
+    pub fn picker(&self) -> Picker {
+        Picker::new(self.input_choice(), self.recent_inputs.clone())
     }
 }
 
@@ -319,8 +362,14 @@ impl Config {
         }
     }
 
-    /// makes sure the built-ins appear exactly once
+    /// makes sure the built-ins appear exactly once, and carries a mic picked
+    /// before auto mode existed over as the one auto mode prefers
     fn normalize(&mut self) {
+        if self.recent_inputs.is_empty()
+            && let Some(name) = &self.input
+        {
+            self.recent_inputs.push(name.clone());
+        }
         let mut seen_eq = false;
         let mut seen_gate = false;
         let mut seen_denoise = false;
@@ -361,7 +410,12 @@ mod tests {
     #[test]
     fn roundtrip() {
         let mut c = Config {
+            input_mode: InputMode::Device,
             input: Some("alsa_input.usb-Yamaha_Steinberg_UR22C".into()),
+            recent_inputs: vec![
+                "alsa_input.usb-Yamaha_Steinberg_UR22C".into(),
+                "bluez_input.x".into(),
+            ],
             output: Some("coreaudio:BlackHole2ch_UID".into()),
             input_channel: InputChannel::Right,
             ..Default::default()
@@ -381,6 +435,23 @@ mod tests {
         let text = toml::to_string_pretty(&c).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(c, back);
+    }
+
+    #[test]
+    fn input_from_before_auto_mode_is_preferred_by_auto() {
+        let mut c: Config = toml::from_str("input = \"alsa_input.usb-mic\"").unwrap();
+        c.normalize();
+        // auto is the default now, and the old pick is the mic it goes for
+        assert_eq!(c.input_choice(), InputChoice::Auto);
+        assert_eq!(c.recent_inputs, ["alsa_input.usb-mic"]);
+
+        c.set_input_choice(&InputChoice::Device("alsa_input.usb-mic".into()));
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(
+            back.input_choice(),
+            InputChoice::Device("alsa_input.usb-mic".into())
+        );
+        assert_eq!(Config::default().input_choice(), InputChoice::Auto);
     }
 
     #[test]
