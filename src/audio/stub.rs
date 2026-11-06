@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use super::{Ctrl, Device, QUANTUM, SAMPLE_RATE, SOURCE_DESCRIPTION};
+use super::{Ctrl, Device, Picker, QUANTUM, SAMPLE_RATE, SOURCE_DESCRIPTION};
 use crate::engine::Engine;
 use crate::shared::Shared;
 
@@ -20,7 +20,7 @@ impl Backend {
     pub fn start(
         shared: Arc<Shared>,
         mut engine: Engine,
-        _input: Option<String>,
+        picker: Picker,
         _output: Option<String>,
     ) -> anyhow::Result<Self> {
         shared.set_status(format!(
@@ -31,6 +31,7 @@ impl Backend {
             name: "test.signal".into(),
             description: "Test signal".into(),
         });
+        picker.resolve(&shared);
         let quit = Arc::new(AtomicBool::new(false));
         let thread = std::thread::spawn({
             let quit = quit.clone();

@@ -27,7 +27,7 @@ use cpal::{
     SupportedBufferSize,
 };
 
-use super::{Ctrl, Device, MAX_BLOCK, QUANTUM, SAMPLE_RATE};
+use super::{Ctrl, Device, MAX_BLOCK, Picker, QUANTUM, SAMPLE_RATE};
 use crate::engine::Engine;
 use crate::shared::{InputChannel, Shared};
 
@@ -190,13 +190,13 @@ impl Backend {
     pub fn start(
         shared: Arc<Shared>,
         engine: Engine,
-        input: Option<String>,
+        picker: Picker,
         output: Option<String>,
     ) -> anyhow::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("coreaudio-ctl".into())
-            .spawn(move || control(shared, engine, input, output, rx))?;
+            .spawn(move || control(shared, engine, picker, output, rx))?;
         Ok(Self {
             tx,
             thread: Some(thread),
@@ -243,7 +243,11 @@ struct State {
     shared: Arc<Shared>,
     processor: Arc<Exclusive<Processor>>,
     output: Arc<Exclusive<Output>>,
-    input_name: Option<String>,
+    picker: Picker,
+    /// the input device being captured (`None` = system default)
+    active: Option<String>,
+    /// input device names seen by the last refresh, to spot new ones
+    seen: Option<Vec<String>>,
     output_name: Option<String>,
     source: Source,
     sink: Option<Stream>,
@@ -256,7 +260,7 @@ struct State {
 fn control(
     shared: Arc<Shared>,
     engine: Engine,
-    input: Option<String>,
+    picker: Picker,
     output: Option<String>,
     rx: Receiver<Ctrl>,
 ) {
@@ -276,7 +280,9 @@ fn control(
             priming: true,
         }),
         shared,
-        input_name: input,
+        picker,
+        active: None,
+        seen: None,
         output_name: output,
         source: Source::None,
         sink: None,
@@ -284,16 +290,17 @@ fn control(
         input_status: String::new(),
         output_status: String::new(),
     };
-    refresh_devices(&st);
+    refresh_devices(&mut st);
+    st.active = st.picker.resolve(&st.shared);
     rebuild_input(&mut st);
     rebuild_output(&mut st);
     let mut last_refresh = Instant::now();
     loop {
         match rx.recv_timeout(REFRESH) {
             Ok(Ctrl::Quit) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(Ctrl::SetInput(name)) => {
-                st.input_name = name;
-                rebuild_input(&mut st);
+            Ok(Ctrl::SetInput(choice)) => {
+                st.picker.set_choice(choice);
+                follow_picker(&mut st);
             }
             Ok(Ctrl::SetOutput(name)) => {
                 st.output_name = name;
@@ -303,7 +310,8 @@ fn control(
         }
         if last_refresh.elapsed() >= REFRESH {
             last_refresh = Instant::now();
-            refresh_devices(&st);
+            refresh_devices(&mut st);
+            follow_picker(&mut st);
             // retry after errors (device unplugged) and while a device is missing
             let input_down = matches!(st.source, Source::None);
             if st.failed.swap(false, Ordering::Relaxed) || input_down {
@@ -338,26 +346,58 @@ fn device_info(d: &CpalDevice) -> Option<Device> {
     })
 }
 
-fn refresh_devices(st: &State) {
+fn refresh_devices(st: &mut State) {
     let mut inputs: Vec<Device> = st
         .host
         .input_devices()
         .map(|it| it.filter_map(|d| device_info(&d)).collect())
         .unwrap_or_default();
-    inputs.push(Device {
-        id: 0,
-        name: TEST_SIGNAL.into(),
-        description: "Test signal (no mic)".into(),
-    });
     let outputs: Vec<Device> = st
         .host
         .output_devices()
         .map(|it| it.filter_map(|d| device_info(&d)).collect())
         .unwrap_or_default();
+
+    // inputs that weren't there on the last refresh were just plugged in.
+    // loopback devices (blackhole, or wherever the output goes) are left
+    // out: capturing those would feed fsa its own output.
+    let names: Vec<String> = inputs.iter().map(|d| d.name.clone()).collect();
+    if let Some(seen) = &st.seen {
+        for d in &inputs {
+            let loopback = d.description.to_lowercase().contains("blackhole")
+                || st.output_name.as_deref() == Some(d.name.as_str());
+            if !seen.contains(&d.name) && !loopback {
+                log::info!("mic plugged in: {}", d.description);
+                st.picker.remember(&d.name);
+            }
+        }
+    }
+    st.seen = Some(names);
+
+    inputs.push(Device {
+        id: 0,
+        name: TEST_SIGNAL.into(),
+        description: "Test signal (no mic)".into(),
+    });
     *st.shared.devices.lock().unwrap() = inputs;
     *st.shared.outputs.lock().unwrap() = outputs;
 }
 
+/// moves the capture to whatever the picker wants now
+fn follow_picker(st: &mut State) {
+    let target = st.picker.resolve(&st.shared);
+    if target == st.active {
+        return;
+    }
+    log::info!(
+        "switching input to {}",
+        target.as_deref().unwrap_or("the default device")
+    );
+    st.active = target;
+    // an error from the stream being replaced doesn't matter anymore
+    st.failed.store(false, Ordering::Relaxed);
+    rebuild_input(st);
+}
 fn find(st: &State, name: &str) -> Option<CpalDevice> {
     let id: DeviceId = name.parse().ok()?;
     st.host.device_by_id(&id)
@@ -425,10 +465,10 @@ fn rebuild_input(st: &mut State) {
 }
 
 fn start_input(st: &State) -> anyhow::Result<Source> {
-    if st.input_name.as_deref() == Some(TEST_SIGNAL) {
+    if st.active.as_deref() == Some(TEST_SIGNAL) {
         return Ok(start_test_signal(st.processor.clone()));
     }
-    let device = match &st.input_name {
+    let device = match &st.active {
         Some(name) => {
             find(st, name).with_context(|| "selected input device not found".to_string())?
         }

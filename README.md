@@ -60,6 +60,13 @@ The package installs a desktop entry, so fsa shows up as "fsa" in app
 launchers (rofi, wofi, fuzzel, ...). To start it with Hyprland, add
 `exec-once = fsa` to `hyprland.conf`.
 
+By default the input is set to **Auto**: fsa switches to a mic as soon as
+it's plugged in (USB, Bluetooth headset, ...), goes back to the previous
+one when it's unplugged, and falls back to the system default if none of
+the mics it remembers are there. It also starts on the last one it used.
+Picking a device in the input list pins it; pick **Auto** to go back.
+Virtual sources made by other apps don't count as plugged-in mics.
+
 `--channel left|right|mix` selects which channel of the source is used
 (default `left`). The source is captured as stereo, so for an interface
 like the UR22C with the mic on input 1, `left` avoids the -6 dB you'd get
@@ -128,7 +135,7 @@ pick **BlackHole 2ch** as the input device.
 ```sh
 nix develop          # rust toolchain, pipewire, libclang, wayland/gl libs
 cargo run --release -- --list               # show capture sources (node.name)
-cargo run --release -- --input <node.name>  # start the gui (input can also be picked there)
+cargo run --release -- --input <node.name>  # start the gui pinned to a source (or: auto, default)
 
 nix build            # or: nix run
 ```

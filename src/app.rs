@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use egui::{Color32, RichText, Stroke};
 
-use crate::audio::{Backend, Ctrl, Device, HAS_OUTPUT_PICKER, SAMPLE_RATE};
+use crate::audio::{Backend, Ctrl, Device, HAS_OUTPUT_PICKER, InputChoice, SAMPLE_RATE};
 use crate::config::{ChainEntry, Config, EqConfig};
 use crate::dsp::denoise::{Denoise, DenoiseParams};
 use crate::dsp::eq::{Eq, EqParams};
@@ -218,6 +218,69 @@ enum RowAction {
     ToggleEditor(usize),
 }
 
+/// display name of a device, or a "missing" marker
+fn describe(devices: &[Device], name: &str) -> String {
+    devices
+        .iter()
+        .find(|d| d.name == name)
+        .map(|d| d.description.clone())
+        .unwrap_or_else(|| format!("{name} (missing)"))
+}
+
+/// input picker; returns the new choice when the user picked one.
+/// `active` is what auto mode resolved to.
+fn input_combo(
+    ui: &mut egui::Ui,
+    current: &InputChoice,
+    active: Option<&str>,
+    devices: &[Device],
+) -> Option<InputChoice> {
+    const AUTO: &str = "Auto (last plugged in)";
+    const DEFAULT: &str = "System default";
+    let text = match current {
+        InputChoice::Auto => format!(
+            "Auto · {}",
+            active.map_or_else(|| DEFAULT.to_string(), |n| describe(devices, n))
+        ),
+        InputChoice::Default => DEFAULT.to_string(),
+        InputChoice::Device(name) => describe(devices, name),
+    };
+    let mut pick = None;
+    egui::ComboBox::from_id_salt("input")
+        .width(240.0)
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(*current == InputChoice::Auto, AUTO)
+                .on_hover_text(
+                    "use the mic that was plugged in most recently, falling back \
+                     to the previous one (or the system default) when it's unplugged",
+                )
+                .clicked()
+            {
+                pick = Some(InputChoice::Auto);
+            }
+            if ui
+                .selectable_label(*current == InputChoice::Default, DEFAULT)
+                .clicked()
+            {
+                pick = Some(InputChoice::Default);
+            }
+            ui.separator();
+            for d in devices {
+                let sel = matches!(current, InputChoice::Device(n) if *n == d.name);
+                if ui
+                    .selectable_label(sel, &d.description)
+                    .on_hover_text(&d.name)
+                    .clicked()
+                {
+                    pick = Some(InputChoice::Device(d.name.clone()));
+                }
+            }
+        });
+    pick
+}
+
 /// device picker; returns the new selection when the user picked one
 fn device_combo(
     ui: &mut egui::Ui,
@@ -228,11 +291,7 @@ fn device_combo(
 ) -> Option<Option<String>> {
     let text = match current {
         None => none_label.to_string(),
-        Some(name) => devices
-            .iter()
-            .find(|d| &d.name == name)
-            .map(|d| d.description.clone())
-            .unwrap_or_else(|| format!("{name} (missing)")),
+        Some(name) => describe(devices, name),
     };
     let mut pick = None;
     egui::ComboBox::from_id_salt(id)
@@ -366,7 +425,7 @@ pub struct App {
     /// lilv worlds replaced by a rescan, kept alive for the instances they made
     retired_lv2: Vec<Lv2Host>,
     browser: Browser,
-    input: Option<String>,
+    input: InputChoice,
     output: Option<String>,
     selected: Option<u32>,
     error: Option<String>,
@@ -416,7 +475,7 @@ impl App {
             lv2,
             retired_lv2: Vec::new(),
             browser: Browser::default(),
-            input: config.input.clone(),
+            input: config.input_choice(),
             output: config.output.clone(),
             selected,
             error,
@@ -429,8 +488,10 @@ impl App {
     }
 
     fn snapshot(&self) -> Config {
-        Config {
-            input: self.input.clone(),
+        let mut config = Config {
+            input_mode: Default::default(),
+            input: None,
+            recent_inputs: self.shared.recent_inputs.lock().unwrap().clone(),
             output: self.output.clone(),
             input_channel: self.shared.input_channel(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
@@ -443,7 +504,9 @@ impl App {
             },
             gate: self.gate.get().into(),
             denoise: self.denoise.get().into(),
-        }
+        };
+        config.set_input_choice(&self.input);
+        config
     }
 
     fn save(&mut self, config: Config) {
@@ -589,7 +652,8 @@ impl App {
             ui.add_space(12.0);
             caption(ui, "Input");
             let devices = self.shared.devices.lock().unwrap().clone();
-            if let Some(p) = device_combo(ui, "input", &self.input, &devices, "System default")
+            let active = self.shared.active_input.lock().unwrap().clone();
+            if let Some(p) = input_combo(ui, &self.input, active.as_deref(), &devices)
                 && p != self.input
             {
                 self.input = p.clone();

@@ -50,6 +50,10 @@ pub struct Shared {
     pub devices: Mutex<Vec<Device>>,
     /// output devices the processed signal can be played into (macos only)
     pub outputs: Mutex<Vec<Device>>,
+    /// source the capture is pointed at right now (`None` = session default)
+    pub active_input: Mutex<Option<String>>,
+    /// recently plugged in mics, newest first, as tracked by the backend
+    pub recent_inputs: Mutex<Vec<String>>,
     /// human readable backend state (non-rt only)
     pub status: Mutex<String>,
 }

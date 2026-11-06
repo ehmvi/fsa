@@ -16,6 +16,9 @@ mod stub;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use self::stub::Backend;
 
+mod picker;
+pub use self::picker::{InputChoice, Picker};
+
 /// whether the backend plays into a user-chosen output device (macos)
 pub const HAS_OUTPUT_PICKER: bool = cfg!(target_os = "macos");
 
@@ -45,8 +48,8 @@ pub struct Device {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum Ctrl {
-    /// switch the capture to another source (`None` = session default)
-    SetInput(Option<String>),
+    /// change how the capture source is chosen
+    SetInput(InputChoice),
     /// switch the device the processed signal is played into (macos only;
     /// `None` = the first blackhole device)
     SetOutput(#[cfg_attr(target_os = "linux", allow(dead_code))] Option<String>),
