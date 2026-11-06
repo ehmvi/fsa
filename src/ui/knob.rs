@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 use egui::{Color32, Response, Sense, Stroke, Ui, Widget, pos2, vec2};
 
-use super::theme::{self, GRID, INK, LINE, MUTED, SIGNAL, SURFACE, SURFACE_HI};
+use super::theme::{self, INK, LINE, MUTED, SIGNAL, SURFACE, SURFACE_HI};
 
 const START: f32 = std::f32::consts::PI * 0.75;
 const SWEEP: f32 = std::f32::consts::PI * 1.5;
@@ -138,12 +138,13 @@ impl Widget for Knob<'_> {
                 .collect()
         };
         // track with round ends
+        let track = dim(theme::BORDER);
         painter.add(egui::Shape::line(
             arc(0.0, 1.0),
-            Stroke::new(stroke_w, GRID),
+            Stroke::new(stroke_w, track),
         ));
         for end in [0.0, 1.0] {
-            painter.circle_filled(at(end), stroke_w / 2.0, GRID);
+            painter.circle_filled(at(end), stroke_w / 2.0, track);
         }
         // bipolar ranges fill from the centre
         let (lo, hi) = (*self.range.start(), *self.range.end());
@@ -181,7 +182,7 @@ impl Widget for Knob<'_> {
             pos2(rect.center().x, rect.bottom()),
             egui::Align2::CENTER_BOTTOM,
             (self.format)(*self.value),
-            theme::mono(11.0),
+            theme::mono(if r > 20.0 { 12.0 } else { 11.0 }),
             dim(if active { self.color } else { INK }),
         );
         resp.on_hover_text("drag or scroll (shift: fine), double-click: reset")

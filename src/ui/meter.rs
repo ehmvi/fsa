@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use egui::{Color32, Mesh, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
-use super::theme::{self, ALERT, DEEP, FAINT, GRID, INK, MUTED, SIGNAL, SIGNAL_DIM};
+use super::theme::{self, ALERT, DEEP, GRID, INK, MUTED, SIGNAL, SIGNAL_DIM};
 
 use crate::dsp::lin_to_db;
 
@@ -12,7 +12,7 @@ const DB_MIN: f32 = -60.0;
 /// fall rate of the bar
 const DECAY_DB_PER_S: f32 = 24.0;
 const HOLD_S: f32 = 1.5;
-const WIDTH: f32 = 14.0;
+const WIDTH: f32 = 16.0;
 const TICKS: [f32; 6] = [0.0, -6.0, -12.0, -24.0, -36.0, -48.0];
 
 pub struct Meter {
@@ -60,13 +60,13 @@ pub fn scale(ui: &mut Ui, height: f32) {
         super::caption(ui, " ");
         let (rect, _) = ui.allocate_exact_size(vec2(22.0, height), Sense::hover());
         let painter = ui.painter();
-        for db in TICKS {
+        for db in TICKS.into_iter().chain([DB_MIN]) {
             painter.text(
                 pos2(rect.right(), y_of(rect.shrink2(vec2(0.0, 3.0)), db)),
                 egui::Align2::RIGHT_CENTER,
-                format!("{}", db.abs()),
+                format!("{db}"),
                 theme::mono(9.5),
-                FAINT,
+                theme::SUBTLE,
             );
         }
     });
@@ -87,7 +87,7 @@ impl Meter {
     }
 
     pub fn show(&self, ui: &mut Ui, label: &str, height: f32) {
-        let size = vec2(WIDTH + 18.0, height + 44.0);
+        let size = vec2(WIDTH + 10.0, height + 44.0);
         let layout = egui::Layout::top_down(egui::Align::Center);
         ui.allocate_ui_with_layout(size, layout, |ui| {
             super::caption(ui, label);
@@ -97,7 +97,7 @@ impl Meter {
                 outer,
                 WIDTH / 2.0,
                 DEEP,
-                Stroke::new(1.0, GRID),
+                Stroke::new(1.0, theme::BORDER),
                 egui::StrokeKind::Inside,
             );
             let rect = outer.shrink(3.0);
@@ -141,7 +141,7 @@ impl Meter {
                 );
             }
             let (text, color) = if self.hold_db <= DB_MIN {
-                ("-∞".to_string(), FAINT)
+                ("-∞".to_string(), theme::SUBTLE)
             } else {
                 (
                     format!("{:.0}", self.hold_db),

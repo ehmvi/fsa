@@ -11,20 +11,22 @@ use egui::{
 /// window background, behind the cards
 pub const BG: Color32 = Color32::from_rgb(0x12, 0x11, 0x0f);
 /// panels
-pub const CARD: Color32 = Color32::from_rgb(0x1a, 0x19, 0x16);
+pub const CARD: Color32 = Color32::from_rgb(0x1d, 0x1c, 0x18);
 /// card outlines, barely there
-pub const BORDER: Color32 = Color32::from_rgb(0x26, 0x24, 0x20);
+pub const BORDER: Color32 = Color32::from_rgb(0x2e, 0x2b, 0x26);
 /// sunken areas inside a card: graph, meters, text fields, slider rails
-pub const DEEP: Color32 = Color32::from_rgb(0x15, 0x14, 0x12);
+pub const DEEP: Color32 = Color32::from_rgb(0x16, 0x15, 0x13);
 /// buttons, combo boxes, popups
 pub const SURFACE: Color32 = Color32::from_rgb(0x24, 0x22, 0x1e);
 pub const SURFACE_HI: Color32 = Color32::from_rgb(0x2f, 0x2c, 0x27);
-pub const GRID: Color32 = Color32::from_rgb(0x23, 0x22, 0x1e);
+pub const GRID: Color32 = Color32::from_rgb(0x25, 0x23, 0x20);
 /// hairlines, frames, the 0 db line
 pub const LINE: Color32 = Color32::from_rgb(0x38, 0x35, 0x30);
 pub const INK: Color32 = Color32::from_rgb(0xe8, 0xe2, 0xd6);
 pub const MUTED: Color32 = Color32::from_rgb(0x96, 0x8f, 0x83);
 pub const FAINT: Color32 = Color32::from_rgb(0x5e, 0x59, 0x51);
+/// small secondary text: indices, scales, counts (readable where FAINT is not)
+pub const SUBTLE: Color32 = Color32::from_rgb(0x80, 0x7a, 0x6f);
 pub const SIGNAL: Color32 = Color32::from_rgb(0xf0, 0xa8, 0x3e);
 /// the low end of meters and level bars
 pub const SIGNAL_DIM: Color32 = Color32::from_rgb(0x9a, 0x6a, 0x2a);

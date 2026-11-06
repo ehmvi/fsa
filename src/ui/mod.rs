@@ -33,6 +33,45 @@ pub fn pill(ui: &mut Ui, text: &str, on: bool, solid: bool, min_width: f32) -> e
     ui.add(button)
 }
 
+/// quiet outlined text button. `danger` turns the label red on hover.
+pub fn ghost(ui: &mut Ui, text: &str, enabled: bool, danger: bool) -> egui::Response {
+    let font = egui::FontId::proportional(12.5);
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), MUTED)
+        .size()
+        .x;
+    let size = vec2(width + 20.0, 24.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let hovered = enabled && resp.hovered();
+    let color = match (enabled, hovered, danger) {
+        (false, _, _) => FAINT,
+        (true, true, true) => theme::ALERT,
+        (true, true, false) => INK,
+        (true, false, _) => MUTED,
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        12.0,
+        if hovered {
+            theme::SURFACE
+        } else {
+            Color32::TRANSPARENT
+        },
+        Stroke::new(1.0, if enabled { LINE } else { theme::BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    let galley = painter.layout_no_wrap(text.to_string(), font, color);
+    painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+    resp
+}
+
 /// on/off switch. returns true when clicked.
 pub fn on_off(ui: &mut Ui, on: bool) -> bool {
     switch(ui, on)
@@ -51,7 +90,8 @@ pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let t = ui.ctx().animate_bool_responsive(resp.id, on);
     let enabled = ui.is_enabled();
     let track = if enabled {
-        lerp_color(SURFACE_HI, SIGNAL.gamma_multiply(0.85), t)
+        // a muted amber track; the cream thumb carries the "on"
+        lerp_color(SURFACE_HI, theme::SIGNAL_DIM, t)
     } else {
         SURFACE_HI.gamma_multiply(0.6)
     };
@@ -101,20 +141,27 @@ pub fn title(ui: &mut Ui, text: &str, dimmed: bool) {
 
 /// a status dot with a short mono label, e.g. "● OPEN"
 pub fn state_chip(ui: &mut Ui, text: &str, lit: bool) -> egui::Response {
+    chip(ui, text, lit, 84.0, Sense::hover())
+}
+
+/// the chip of `state_chip`, with a minimum width and any sense
+pub fn chip(ui: &mut Ui, text: &str, lit: bool, min_width: f32, sense: Sense) -> egui::Response {
     let color = if lit { SIGNAL } else { MUTED };
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_string(), theme::mono(11.0), color);
-    let size = vec2(galley.size().x + 32.0, 24.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    let size = vec2((galley.size().x + 32.0).max(min_width), 26.0);
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let hovered = resp.hovered() && sense.senses_click();
     let painter = ui.painter();
     painter.rect(
         rect,
-        12.0,
-        if lit {
-            SIGNAL.gamma_multiply(0.12)
-        } else {
-            Color32::TRANSPARENT
+        13.0,
+        match (lit, hovered) {
+            (true, false) => SIGNAL.gamma_multiply(0.12),
+            (true, true) => SIGNAL.gamma_multiply(0.2),
+            (false, false) => Color32::TRANSPARENT,
+            (false, true) => theme::SURFACE,
         },
         Stroke::new(
             1.0,
@@ -139,37 +186,84 @@ pub fn state_chip(ui: &mut Ui, text: &str, lit: bool) -> egui::Response {
     resp
 }
 
+/// knob radius in the gate and denoise panels
+pub const PANEL_KNOB: f32 = 28.0;
+
+/// lays knobs out in equal columns (`columns` of them across the row), so the
+/// gate and denoise panels share one grid
+pub fn knob_columns(
+    ui: &mut Ui,
+    columns: usize,
+    count: usize,
+    mut add: impl FnMut(&mut Ui, usize),
+) {
+    let pitch = knob_pitch(ui, columns);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for i in 0..count {
+            knob_cell(ui, pitch, |ui| add(ui, i));
+        }
+    });
+}
+
+/// column width of `knob_columns` for the current row
+pub fn knob_pitch(ui: &Ui, columns: usize) -> f32 {
+    (ui.available_width() / columns as f32).clamp(80.0, 132.0)
+}
+
+/// one column of `knob_columns`, for rows that mix knobs with other things
+pub fn knob_cell(ui: &mut Ui, pitch: f32, add: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(
+        vec2(pitch, 2.0 * PANEL_KNOB + 40.0),
+        egui::Layout::top_down(egui::Align::Center),
+        add,
+    );
+}
+
+/// a state chip, a level bar and a right-aligned readout on one line
+pub fn status_strip(
+    ui: &mut Ui,
+    chip_text: &str,
+    chip_lit: bool,
+    bar: (f32, Option<f32>, bool),
+    readout: &str,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let chip = state_chip(ui, chip_text, chip_lit);
+        ui.add_space(10.0);
+        let right = ui.max_rect().right();
+        let w = (right - ui.cursor().left() - 64.0).max(80.0);
+        let rect = level_bar(ui, w, bar.0, bar.1, bar.2);
+        ui.painter().text(
+            pos2(right, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            readout,
+            theme::mono(11.0),
+            MUTED,
+        );
+        chip
+    })
+    .inner
+}
+
 /// horizontal level bar. `t` and `marker` are 0..1; the fill is amber when
-/// `lit`, grey otherwise, and the marker (a threshold) is a cream tick.
+/// `lit`, dim amber otherwise, and the marker (a threshold) is a cream tick.
 pub fn level_bar(ui: &mut Ui, width: f32, t: f32, marker: Option<f32>, lit: bool) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
     let painter = ui.painter();
     painter.rect(
         rect,
         5.0,
-        theme::DEEP,
-        Stroke::new(1.0, theme::GRID),
+        theme::BG,
+        Stroke::new(1.0, theme::BORDER),
         egui::StrokeKind::Inside,
     );
     let inner = rect.shrink(2.0);
-    let t = t.clamp(0.0, 1.0);
-    if t > 0.0 {
-        let fill = egui::Rect::from_min_max(
-            inner.min,
-            pos2(
-                inner.left() + (inner.width() * t).max(inner.height()),
-                inner.bottom(),
-            ),
-        );
-        painter.rect_filled(
-            fill,
-            3.0,
-            if lit {
-                SIGNAL
-            } else {
-                MUTED.gamma_multiply(0.6)
-            },
-        );
+    let w = inner.width() * t.clamp(0.0, 1.0);
+    // nothing rather than a dot when there's (almost) no signal
+    if w >= inner.height() {
+        let fill = egui::Rect::from_min_max(inner.min, pos2(inner.left() + w, inner.bottom()));
+        painter.rect_filled(fill, 3.0, if lit { SIGNAL } else { theme::SIGNAL_DIM });
     }
     if let Some(m) = marker {
         let x = inner.left() + inner.width() * m.clamp(0.0, 1.0);

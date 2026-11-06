@@ -214,6 +214,15 @@ pub struct EqView {
     below_graph: f32,
     /// where the graph was drawn last frame
     graph_rect: Rect,
+    /// a header button clicked this frame, applied by the next `show`
+    action: Option<HeaderAction>,
+}
+
+#[derive(Clone, Copy)]
+enum HeaderAction {
+    Undo,
+    Redo,
+    Reset,
 }
 
 impl EqView {
@@ -234,6 +243,7 @@ impl EqView {
             gesture: None,
             below_graph: 140.0,
             graph_rect: Rect::NOTHING,
+            action: None,
         }
     }
 
@@ -279,17 +289,26 @@ impl EqView {
         self.graph_rect = rect;
         self.graph(ui, rect, &resp, params, &before);
         let top = ui.cursor().top();
-        ui.add_space(10.0);
-        theme::well()
-            .inner_margin(egui::Margin::symmetric(14, 10))
+        // gutter for the frequency labels, drawn by `grid`
+        ui.add_space(14.0);
+        // the band editor sits in a well; with nothing selected the slot keeps
+        // its height but loses the box
+        let frame = if self.selected.is_some() {
+            theme::well()
+        } else {
+            egui::Frame::new().stroke(Stroke::new(1.0, Color32::TRANSPARENT))
+        };
+        frame
+            .inner_margin(egui::Margin::symmetric(14, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 // same height with or without a band selected, so the graph doesn't jump
-                ui.set_min_height(108.0);
+                ui.set_min_height(104.0);
                 self.band_strip(ui, params);
             });
         ui.add_space(10.0);
         self.bottom_bar(ui, params);
+        self.apply_action(params);
         // the strip wraps on narrow windows; the graph gives way next frame
         let below = ui.cursor().top() - top + 4.0;
         if (below - self.below_graph).abs() > 0.5 {
@@ -336,7 +355,7 @@ impl EqView {
         let freqs: Vec<f32> = xs.iter().map(|&x| f_of(rect, x)).collect();
         let phis: Vec<Phi> = freqs.iter().map(|&f| Phi::at(f, fs)).collect();
 
-        self.grid(&painter, rect);
+        self.grid(&painter, &ui.painter().clone(), rect);
 
         // analyzer
         let now = Instant::now();
@@ -487,7 +506,7 @@ impl EqView {
         }
     }
 
-    fn grid(&self, painter: &egui::Painter, rect: Rect) {
+    fn grid(&self, painter: &egui::Painter, gutter: &egui::Painter, rect: Rect) {
         let grid = Stroke::new(1.0, GRID);
         let label = MUTED.gamma_multiply(0.8);
         let font = theme::mono(10.0);
@@ -515,26 +534,19 @@ impl EqView {
                 } else {
                     format!("{f}")
                 };
-                // the last label would run off the right edge
-                let (at, align) = if x > rect.right() - 30.0 {
-                    (x - 3.0, egui::Align2::RIGHT_BOTTOM)
-                } else {
-                    (x + 3.0, egui::Align2::LEFT_BOTTOM)
-                };
-                // skip labels that would run into the previous one on narrow graphs
+                // centred under its line in the gutter below the plot, kept
+                // inside the plot's width
                 let width = text.len() as f32 * 6.2;
-                let left = if align == egui::Align2::RIGHT_BOTTOM {
-                    at - width
-                } else {
-                    at
-                };
+                let at = x.clamp(rect.left() + width / 2.0, rect.right() - width / 2.0);
+                // skip labels that would run into the previous one on narrow graphs
+                let left = at - width / 2.0;
                 if left < last_right + 8.0 {
                     continue;
                 }
                 last_right = left + width;
-                painter.text(
-                    pos2(at, rect.bottom() - 3.0),
-                    align,
+                gutter.text(
+                    pos2(at, rect.bottom() + 2.0),
+                    egui::Align2::CENTER_TOP,
                     text,
                     font.clone(),
                     label,
@@ -571,6 +583,13 @@ impl EqView {
             }
             db += step;
         }
+        painter.text(
+            rect.right_top() + vec2(-4.0, 5.0),
+            egui::Align2::RIGHT_TOP,
+            "dB",
+            font.clone(),
+            label,
+        );
         // analyzer scale on the left
         if self.analyzer_mode != AnalyzerMode::Off {
             for db in [-20.0, -40.0, -60.0, -80.0] {
@@ -580,7 +599,7 @@ impl EqView {
                     egui::Align2::LEFT_CENTER,
                     format!("{db}"),
                     font.clone(),
-                    FAINT,
+                    theme::SUBTLE.gamma_multiply(0.8),
                 );
             }
         }
@@ -873,22 +892,16 @@ impl EqView {
 
     fn band_strip(&mut self, ui: &mut Ui, params: &EqParams) {
         let Some(i) = self.selected else {
-            let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
             ui.allocate_ui_with_layout(
-                vec2(ui.available_width(), 108.0),
+                vec2(ui.available_width(), 104.0),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    ui.add_space(32.0);
-                    ui.label(
-                        RichText::new(format!("{n} of {MAX_BANDS} bands"))
-                            .font(theme::mono(11.0))
-                            .color(MUTED),
-                    );
+                    ui.add_space(42.0);
                     ui.label(
                         RichText::new(
                             "Click a band to edit it · double-click to add · right-click for shapes",
                         )
-                        .color(FAINT.gamma_multiply(1.4)),
+                        .color(theme::SUBTLE),
                     );
                 },
             );
@@ -936,8 +949,7 @@ impl EqView {
                     });
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(egui::Button::new(RichText::new("Delete").color(MUTED)).frame(false))
+                if super::ghost(ui, "Delete", true, true)
                     .on_hover_text("remove this band (delete key)")
                     .clicked()
                 {
@@ -1014,8 +1026,6 @@ impl EqView {
 
     fn bottom_bar(&mut self, ui: &mut Ui, params: &EqParams) {
         ui.horizontal(|ui| {
-            // frameless text buttons keep the bar on one line at the default size
-            let text = |t: &str| egui::Button::new(RichText::new(t).color(MUTED)).frame(false);
             super::caption(ui, "Analyzer");
             egui::ComboBox::from_id_salt("eq_analyzer")
                 .width(90.0)
@@ -1030,6 +1040,7 @@ impl EqView {
                         ui.selectable_value(&mut self.analyzer_mode, m, analyzer_name(m));
                     }
                 });
+            ui.add_space(10.0);
             super::caption(ui, "Range");
             egui::ComboBox::from_id_salt("eq_range")
                 .width(70.0)
@@ -1039,8 +1050,8 @@ impl EqView {
                         ui.selectable_value(&mut self.range, r, format!("±{r} dB"));
                     }
                 });
-            ui.add_space(4.0);
-            super::caption(ui, "Out");
+            ui.add_space(10.0);
+            super::caption(ui, "Output");
             let mut out = params.output_gain.get();
             if ui
                 .add(
@@ -1055,39 +1066,57 @@ impl EqView {
             {
                 params.output_gain.set(out);
             }
-            // history on the right, in reading order
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if ui
-                    .add(text("Reset"))
-                    .on_hover_text("back to a single low cut")
-                    .clicked()
-                {
-                    for k in 0..MAX_BANDS {
-                        params.set_band(k, None);
-                    }
-                    for b in default_bands() {
-                        params.add_band(b);
-                    }
-                    params.output_gain.set(0.0);
-                    self.selected = None;
-                }
-                if ui
-                    .add_enabled(!self.redo.is_empty(), text("Redo"))
-                    .on_hover_text("redo (shift+ctrl/cmd+z)")
-                    .clicked()
-                {
-                    self.undo_redo(params, false);
-                }
-                if ui
-                    .add_enabled(!self.undo.is_empty(), text("Undo"))
-                    .on_hover_text("undo (ctrl/cmd+z)")
-                    .clicked()
-                {
-                    self.undo_redo(params, true);
-                }
+                let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
+                ui.label(
+                    RichText::new(format!("{n}/{MAX_BANDS} bands"))
+                        .font(theme::mono(10.5))
+                        .color(theme::SUBTLE),
+                );
             });
         });
+    }
+
+    /// undo, redo and reset, drawn in the panel header (right to left). the
+    /// click is applied by the next `show` so it lands in the undo history.
+    pub fn header_actions(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if super::ghost(ui, "Reset", true, true)
+            .on_hover_text("back to a single low cut")
+            .clicked()
+        {
+            self.action = Some(HeaderAction::Reset);
+        }
+        if super::ghost(ui, "Redo", !self.redo.is_empty(), false)
+            .on_hover_text("redo (shift+ctrl/cmd+z)")
+            .clicked()
+        {
+            self.action = Some(HeaderAction::Redo);
+        }
+        if super::ghost(ui, "Undo", !self.undo.is_empty(), false)
+            .on_hover_text("undo (ctrl/cmd+z)")
+            .clicked()
+        {
+            self.action = Some(HeaderAction::Undo);
+        }
+    }
+
+    fn apply_action(&mut self, params: &EqParams) {
+        match self.action.take() {
+            Some(HeaderAction::Undo) => self.undo_redo(params, true),
+            Some(HeaderAction::Redo) => self.undo_redo(params, false),
+            Some(HeaderAction::Reset) => {
+                for k in 0..MAX_BANDS {
+                    params.set_band(k, None);
+                }
+                for b in default_bands() {
+                    params.add_band(b);
+                }
+                params.output_gain.set(0.0);
+                self.selected = None;
+            }
+            None => {}
+        }
     }
 
     fn keys(&mut self, ui: &Ui, params: &EqParams) {

@@ -276,10 +276,10 @@ fn chain_row(
             let icon = |t: &str| {
                 egui::Button::new(RichText::new(t).size(11.0).color(tint))
                     .frame(false)
-                    .min_size(egui::vec2(20.0, 20.0))
+                    .min_size(egui::vec2(18.0, 20.0))
             };
-            // row tools only on the selected or hovered row, so names get the room
-            let hot = selected || ui.rect_contains_pointer(ui.max_rect().expand(6.0));
+            // row tools only on the hovered row, so names get the room
+            let hot = ui.rect_contains_pointer(ui.max_rect().expand(6.0));
             if hot
                 && matches!(
                     item.kind,
@@ -324,7 +324,7 @@ fn chain_row(
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let missing = matches!(item.kind, ItemKind::Missing(_));
                 let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(10.5));
-                ui.label(index.color(if selected { SIGNAL } else { FAINT }));
+                ui.label(index.color(if selected { SIGNAL } else { theme::SUBTLE }));
                 if ui
                     .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
                     .inner
@@ -632,7 +632,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let bypass = self.shared.bypass.load(Ordering::Relaxed);
                 let text = if bypass { "BYPASSED" } else { "ACTIVE" };
-                if ui::pill(ui, text, !bypass, true, 96.0)
+                if ui::chip(ui, text, !bypass, 104.0, egui::Sense::click())
                     .on_hover_text("global bypass: output = raw input")
                     .clicked()
                 {
@@ -650,7 +650,7 @@ impl App {
                 ui.label(
                     RichText::new(format!("{on}/{} on", self.chain.len()))
                         .font(theme::mono(10.5))
-                        .color(FAINT),
+                        .color(theme::SUBTLE),
                 );
             });
         });
@@ -746,19 +746,26 @@ impl App {
             return;
         };
         let item = &mut self.chain[index];
-        if !matches!(item.kind, ItemKind::Eq) {
+        let is_eq = matches!(item.kind, ItemKind::Eq);
+        if !is_eq {
             self.eq_view.hidden(&self.eq);
         }
+        let eq_view = &mut self.eq_view;
         ui.horizontal(|ui| {
             ui.vertical(|ui| ui::title(ui, &item.name(), !item.enabled()));
-            if !item.enabled() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.add_space(0.0);
+                if is_eq {
+                    eq_view.header_actions(ui);
+                    ui.add_space(6.0);
+                }
+                if !item.enabled() {
                     ui::state_chip(ui, "BYPASSED", false)
                         .on_hover_text("switch it on in the chain list");
-                });
-            }
+                }
+            });
         });
-        ui.add_space(12.0);
+        ui.add_space(10.0);
         match &mut item.kind {
             ItemKind::Eq => {
                 self.eq_view.show(ui, &self.eq);
@@ -908,7 +915,7 @@ impl eframe::App for App {
         };
         egui::Panel::right("meters")
             .resizable(false)
-            .exact_size(130.0)
+            .exact_size(120.0)
             .show_separator_line(false)
             .frame(gap(5, 12))
             .show(ui, |ui| {
@@ -925,7 +932,7 @@ impl eframe::App for App {
         egui::Panel::left("chain")
             .resizable(true)
             .show_separator_line(false)
-            .default_size(250.0)
+            .default_size(256.0)
             .frame(gap(12, 5))
             .show(ui, |ui| card(ui, 12, 14, &mut |ui| self.chain_list(ui)));
         egui::CentralPanel::default()

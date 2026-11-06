@@ -5,7 +5,8 @@ use std::sync::atomic::Ordering;
 use egui::{RichText, Ui};
 
 use super::knob::Knob;
-use super::theme::{self, FAINT, MUTED};
+use super::theme::{self, MUTED};
+use super::{PANEL_KNOB, knob_columns, status_strip};
 use crate::dsp::gate::GateParams;
 use crate::dsp::lin_to_db;
 
@@ -31,71 +32,57 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
         RichText::new("Mutes the mic between words, when the level stays under the threshold.")
             .color(MUTED),
     );
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     theme::well().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            super::state_chip(ui, if open { "OPEN" } else { "CLOSED" }, open);
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.add_space(7.0);
-                let w = (ui.available_width() - 70.0).max(120.0);
-                let t = |db: f32| (db - FLOOR_DB) / -FLOOR_DB;
-                let rect = super::level_bar(ui, w, t(level), Some(t(s.threshold_db)), open);
-                ui.painter().text(
-                    rect.right_center() + egui::vec2(10.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    format!("{level:.0} dB"),
-                    theme::mono(11.0),
-                    if level <= FLOOR_DB { FAINT } else { MUTED },
-                );
-            });
-        });
+        let t = |db: f32| (db - FLOOR_DB) / -FLOOR_DB;
+        let readout = if level <= FLOOR_DB {
+            "-∞ dB".to_string()
+        } else {
+            format!("{level:.0} dB")
+        };
+        status_strip(
+            ui,
+            if open { "OPEN" } else { "CLOSED" },
+            open,
+            (t(level), Some(t(s.threshold_db)), open),
+            &readout,
+        )
+        .on_hover_text("the detector level, with the threshold marked");
     });
-    ui.add_space(12.0);
+    ui.add_space(16.0);
     theme::well().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
-            // spread the knobs over the well, within reason
-            let gap = ((ui.available_width() - 5.0 * 70.0) / 4.0).clamp(18.0, 64.0);
-            ui.spacing_mut().item_spacing.x = gap;
-            let db = |v: f32| format!("{v:.1} dB");
-            let ms = |v: f32| {
-                if v < 10.0 {
-                    format!("{v:.1} ms")
-                } else {
-                    format!("{v:.0} ms")
-                }
+        let db = |v: f32| format!("{v:.1} dB");
+        let ms = |v: f32| {
+            if v < 10.0 {
+                format!("{v:.1} ms")
+            } else {
+                format!("{v:.0} ms")
+            }
+        };
+        knob_columns(ui, 5, 5, |ui, i| {
+            let knob = match i {
+                0 => Knob::new(&mut s.threshold_db, -80.0..=0.0, "THRESHOLD", &db).default(-50.0),
+                1 => Knob::new(&mut s.range_db, -80.0..=0.0, "RANGE", &db).default(-40.0),
+                2 => Knob::new(&mut s.attack_ms, 0.1..=50.0, "ATTACK", &ms)
+                    .log()
+                    .default(2.0),
+                3 => Knob::new(&mut s.hold_ms, 0.0..=500.0, "HOLD", &ms).default(80.0),
+                _ => Knob::new(&mut s.release_ms, 5.0..=1000.0, "RELEASE", &ms)
+                    .log()
+                    .default(150.0),
             };
-            ui.add(
-                Knob::new(&mut s.threshold_db, -80.0..=0.0, "THRESHOLD", &db)
-                    .default(-50.0)
-                    .radius(24.0),
-            )
-            .on_hover_text("the gate opens above this level");
-            ui.add(
-                Knob::new(&mut s.range_db, -80.0..=0.0, "RANGE", &db)
-                    .default(-40.0)
-                    .radius(24.0),
-            )
-            .on_hover_text("attenuation while the gate is closed");
-            ui.add(
-                Knob::new(&mut s.attack_ms, 0.1..=50.0, "ATTACK", &ms)
-                    .log()
-                    .default(2.0)
-                    .radius(24.0),
-            );
-            ui.add(
-                Knob::new(&mut s.hold_ms, 0.0..=500.0, "HOLD", &ms)
-                    .default(80.0)
-                    .radius(24.0),
-            );
-            ui.add(
-                Knob::new(&mut s.release_ms, 5.0..=1000.0, "RELEASE", &ms)
-                    .log()
-                    .default(150.0)
-                    .radius(24.0),
-            );
+            let resp = ui.add(knob.radius(PANEL_KNOB));
+            match i {
+                0 => {
+                    resp.on_hover_text("the gate opens above this level");
+                }
+                1 => {
+                    resp.on_hover_text("attenuation while the gate is closed");
+                }
+                _ => {}
+            }
         });
     });
     if s != before {
