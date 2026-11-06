@@ -65,7 +65,7 @@ pub fn scale(ui: &mut Ui, height: f32) {
                 pos2(rect.right(), y_of(rect.shrink2(vec2(0.0, 3.0)), db)),
                 egui::Align2::RIGHT_CENTER,
                 format!("{db}"),
-                theme::mono(9.5),
+                theme::mono(10.0),
                 theme::SUBTLE,
             );
         }

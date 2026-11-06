@@ -32,6 +32,13 @@ const ANA_SPAN: f32 = 90.0;
 /// analyzer tilt around 1 khz, so pink-ish material looks flat (as pro-q)
 const TILT_DB_PER_OCT: f32 = 4.5;
 const NODE_RADIUS: f32 = 8.0;
+/// knob radius in the band editor
+const BAND_KNOB: f32 = 23.0;
+/// height of the band editor slot (header row and a row of knobs), the same
+/// with and without a band selected so the plot never moves
+const EDITOR_H: f32 = CONTROL_ROW + 8.0 + 2.0 * BAND_KNOB + 40.0;
+/// height of the editor header row (combo boxes and ghost buttons)
+const CONTROL_ROW: f32 = 26.0;
 const UNDO_DEPTH: usize = 100;
 
 type Slots = [Option<Band>; MAX_BANDS];
@@ -296,14 +303,17 @@ impl EqView {
         let frame = if self.selected.is_some() {
             theme::well()
         } else {
-            egui::Frame::new().stroke(Stroke::new(1.0, Color32::TRANSPARENT))
+            theme::well()
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::new(1.0, theme::BORDER))
         };
         frame
             .inner_margin(egui::Margin::symmetric(14, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 // same height with or without a band selected, so the graph doesn't jump
-                ui.set_min_height(104.0);
+                ui.set_min_height(EDITOR_H);
+                ui.set_max_height(EDITOR_H);
                 self.band_strip(ui, params);
             });
         ui.add_space(10.0);
@@ -474,8 +484,8 @@ impl EqView {
         {
             let f = f_of(rect, p.x);
             painter.text(
-                rect.left_top() + vec2(8.0, 6.0),
-                egui::Align2::LEFT_TOP,
+                rect.center_top() + vec2(0.0, 6.0),
+                egui::Align2::CENTER_TOP,
                 format!(
                     "{}   {}   {}",
                     format_freq(f),
@@ -508,8 +518,8 @@ impl EqView {
 
     fn grid(&self, painter: &egui::Painter, gutter: &egui::Painter, rect: Rect) {
         let grid = Stroke::new(1.0, GRID);
-        let label = MUTED.gamma_multiply(0.8);
-        let font = theme::mono(10.0);
+        let label = theme::SUBTLE;
+        let font = theme::mono(10.5);
         let mut last_right = f32::NEG_INFINITY;
         for f in [
             20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0,
@@ -591,17 +601,27 @@ impl EqView {
             label,
         );
         // analyzer scale on the left
+        // analyzer scale on the left: its own unit, quieter than the
+        // gain scale the user edits
         if self.analyzer_mode != AnalyzerMode::Off {
+            let quiet = Color32::from_rgb(0x6b, 0x66, 0x5c);
             for db in [-20.0, -40.0, -60.0, -80.0] {
                 let y = rect.top() + (ANA_TOP - db) / ANA_SPAN * rect.height();
                 painter.text(
-                    pos2(rect.left() + 4.0, y),
+                    pos2(rect.left() + 7.0, y),
                     egui::Align2::LEFT_CENTER,
                     format!("{db}"),
                     font.clone(),
-                    theme::SUBTLE.gamma_multiply(0.8),
+                    quiet,
                 );
             }
+            painter.text(
+                rect.left_top() + vec2(7.0, 5.0),
+                egui::Align2::LEFT_TOP,
+                "dBFS",
+                font.clone(),
+                quiet,
+            );
         }
     }
 
@@ -892,16 +912,22 @@ impl EqView {
 
     fn band_strip(&mut self, ui: &mut Ui, params: &EqParams) {
         let Some(i) = self.selected else {
+            // laid out like the editor: a header line, then where the knobs go
             ui.allocate_ui_with_layout(
-                vec2(ui.available_width(), 104.0),
-                egui::Layout::top_down(egui::Align::Center),
+                vec2(ui.available_width(), EDITOR_H),
+                egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.add_space(42.0);
+                    ui.add_space(5.0);
                     ui.label(
-                        RichText::new(
-                            "Click a band to edit it · double-click to add · right-click for shapes",
-                        )
-                        .color(theme::SUBTLE),
+                        RichText::new("NO BAND SELECTED")
+                            .font(theme::mono(11.5))
+                            .color(theme::SUBTLE),
+                    );
+                    ui.add_space(22.0);
+                    ui.label(RichText::new("Click a band on the graph to edit it.").color(MUTED));
+                    ui.label(
+                        RichText::new("Double-click to add one, right-click for every shape.")
+                            .color(theme::SUBTLE),
                     );
                 },
             );
@@ -957,7 +983,7 @@ impl EqView {
                     self.selected = None;
                 }
                 let solo = params.solo() == Some(i);
-                if super::pill(ui, "SOLO", solo, false, 48.0)
+                if super::ghost_toggle(ui, "Solo", solo, true)
                     .on_hover_text("listen to this band's region only")
                     .clicked()
                 {
@@ -968,55 +994,73 @@ impl EqView {
                 }
             });
         });
-        ui.add_space(2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            ui.add(
-                Knob::new(&mut b.freq, filter::FREQ_MIN..=filter::FREQ_MAX, "FREQ", &format_freq)
-                    .log()
-                    .default(1000.0)
-                    .color(color),
-            );
-            ui.add_enabled(
-                b.shape.has_gain(),
-                Knob::new(&mut b.gain, -filter::GAIN_MAX..=filter::GAIN_MAX, "GAIN", &format_db)
-                    .default(0.0)
-                    .color(color),
-            );
-            let q_fmt = |q: f32| format!("{q:.2}");
-            ui.add_enabled(
-                !(b.shape.has_slope() && b.slope == 6),
-                Knob::new(&mut b.q, filter::Q_MIN..=filter::Q_MAX, "Q", &q_fmt)
-                    .log()
-                    .default(b.shape.default_q())
-                    .color(color),
-            );
-            ui.separator();
-
-            // dynamics
-            ui.vertical(|ui| {
-                ui.add_space(14.0);
-                ui.add_enabled_ui(b.shape.has_gain(), |ui| {
-                    if super::pill(ui, "DYNAMIC", b.dynamics.on, false, 0.0)
-                        .on_hover_text("move this band's gain with the level in its region (de-essing, taming resonances)")
-                        .clicked()
-                    {
-                        b.dynamics.on = !b.dynamics.on;
-                    }
-                });
-                if b.is_dynamic() {
+        // knobs on equal columns, like the gate and denoise panels: freq, gain,
+        // q, the dynamic toggle, then the dynamics knobs when it's on
+        let dynamic = b.is_dynamic();
+        let columns = if dynamic { 8 } else { 5 };
+        let pitch = (ui.available_width() / columns as f32).clamp(68.0, 132.0);
+        let r = BAND_KNOB;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            super::knob_cell(ui, pitch, r, |ui| {
+                ui.add(
+                    Knob::new(&mut b.freq, filter::FREQ_MIN..=filter::FREQ_MAX, "FREQ", &format_freq)
+                        .log()
+                        .default(1000.0)
+                        .color(color)
+                        .radius(r),
+                );
+            });
+            super::knob_cell(ui, pitch, r, |ui| {
+                ui.add_enabled(
+                    b.shape.has_gain(),
+                    Knob::new(&mut b.gain, -filter::GAIN_MAX..=filter::GAIN_MAX, "GAIN", &format_db)
+                        .default(0.0)
+                        .color(color)
+                        .radius(r),
+                );
+            });
+            super::knob_cell(ui, pitch, r, |ui| {
+                let q_fmt = |q: f32| format!("{q:.2}");
+                ui.add_enabled(
+                    !(b.shape.has_slope() && b.slope == 6),
+                    Knob::new(&mut b.q, filter::Q_MIN..=filter::Q_MAX, "Q", &q_fmt)
+                        .log()
+                        .default(b.shape.default_q())
+                        .color(color)
+                        .radius(r),
+                );
+            });
+            super::knob_cell(ui, pitch, r, |ui| {
+                ui.add_space(26.0);
+                if super::ghost_toggle(ui, "Dynamic", b.dynamics.on, b.shape.has_gain())
+                    .on_hover_text("move this band's gain with the level in its region (de-essing, taming resonances)")
+                    .clicked()
+                {
+                    b.dynamics.on = !b.dynamics.on;
+                }
+                if dynamic {
+                    ui.add_space(8.0);
                     let t = |db: f32| (db + 80.0) / 80.0;
                     let (level, thr) = (params.level(i), b.dynamics.threshold);
-                    super::level_bar(ui, 76.0, t(level), Some(t(thr)), level > thr);
+                    super::level_bar(ui, pitch - 20.0, t(level), Some(t(thr)), level > thr);
                 }
             });
-            if b.is_dynamic() {
+            if dynamic {
                 let ms = |v: f32| format!("{v:.0} ms");
                 let d = &mut b.dynamics;
-                ui.add(Knob::new(&mut d.threshold, -80.0..=0.0, "THRESH", &|v| format!("{v:.1} dB")).default(-30.0).color(SIGNAL));
-                ui.add(Knob::new(&mut d.range, -filter::GAIN_MAX..=filter::GAIN_MAX, "RANGE", &format_db).default(-6.0).color(SIGNAL));
-                ui.add(Knob::new(&mut d.attack_ms, 0.5..=500.0, "ATTACK", &|v| format!("{v:.1} ms")).log().default(5.0).color(SIGNAL));
-                ui.add(Knob::new(&mut d.release_ms, 5.0..=2000.0, "RELEASE", &ms).log().default(100.0).color(SIGNAL));
+                super::knob_cell(ui, pitch, r, |ui| {
+                    ui.add(Knob::new(&mut d.threshold, -80.0..=0.0, "THRESH", &|v| format!("{v:.1} dB")).default(-30.0).radius(r));
+                });
+                super::knob_cell(ui, pitch, r, |ui| {
+                    ui.add(Knob::new(&mut d.range, -filter::GAIN_MAX..=filter::GAIN_MAX, "RANGE", &format_db).default(-6.0).radius(r));
+                });
+                super::knob_cell(ui, pitch, r, |ui| {
+                    ui.add(Knob::new(&mut d.attack_ms, 0.5..=500.0, "ATTACK", &|v| format!("{v:.1} ms")).log().default(5.0).radius(r));
+                });
+                super::knob_cell(ui, pitch, r, |ui| {
+                    ui.add(Knob::new(&mut d.release_ms, 5.0..=2000.0, "RELEASE", &ms).log().default(100.0).radius(r));
+                });
             }
         });
         if b != before && params.band(i).is_some() {

@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 use egui::{RichText, Ui};
 
 use super::knob::Knob;
-use super::theme::{self, MUTED};
-use super::{PANEL_KNOB, knob_columns, status_strip};
+use super::theme::MUTED;
+use super::{PANEL_KNOB, knob_columns, panel_footer, panel_well, status_strip};
 use crate::dsp::gate::GateParams;
 use crate::dsp::lin_to_db;
 
@@ -32,8 +32,8 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
         RichText::new("Mutes the mic between words, when the level stays under the threshold.")
             .color(MUTED),
     );
-    ui.add_space(16.0);
-    theme::well().show(ui, |ui| {
+    ui.add_space(20.0);
+    panel_well().show(ui, |ui| {
         ui.set_width(ui.available_width());
         let t = |db: f32| (db - FLOOR_DB) / -FLOOR_DB;
         let readout = if level <= FLOOR_DB {
@@ -47,11 +47,18 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
             open,
             (t(level), Some(t(s.threshold_db)), open),
             &readout,
+            &[
+                (0.0, "-80"),
+                (0.25, "-60"),
+                (0.5, "-40"),
+                (0.75, "-20"),
+                (1.0, "0 dB"),
+            ],
         )
         .on_hover_text("the detector level, with the threshold marked");
     });
-    ui.add_space(16.0);
-    theme::well().show(ui, |ui| {
+    ui.add_space(20.0);
+    panel_well().show(ui, |ui| {
         ui.set_width(ui.available_width());
         let db = |v: f32| format!("{v:.1} dB");
         let ms = |v: f32| {
@@ -85,6 +92,10 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
             }
         });
     });
+    panel_footer(
+        ui,
+        "Drag or scroll a knob, hold shift for fine steps, double-click to reset.",
+    );
     if s != before {
         params.set(&s);
         return true;

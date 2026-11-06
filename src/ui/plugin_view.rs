@@ -170,20 +170,24 @@ impl Browser {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| super::title(ui, "Add plugin", false));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        let x = egui::Button::new(RichText::new("🗙").color(super::theme::MUTED))
-                            .frame(false);
-                        if ui.add(x).on_hover_text("close (esc)").clicked() {
+                        if super::close_button(ui)
+                            .on_hover_text("close (esc)")
+                            .clicked()
+                        {
                             close = true;
                         }
                     });
                 });
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
+                    // search field and rescan share one height and the full width
+                    let rescan_w = 76.0;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
                             .hint_text("Search by name, vendor or format…")
-                            .margin(egui::Margin::symmetric(10, 6))
-                            .desired_width(ui.available_width() - 84.0),
+                            .margin(egui::Margin::symmetric(10, 4))
+                            .min_size(egui::vec2(0.0, super::CONTROL_H))
+                            .desired_width(ui.available_width() - rescan_w),
                     );
                     if super::ghost(ui, "Rescan", true, false)
                         .on_hover_text("look for newly installed plugins")
@@ -225,7 +229,11 @@ impl Browser {
                 if plugins.is_empty() {
                     ui.add_space(24.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("No plugins found").strong());
+                        ui.label(
+                            RichText::new("No plugins found")
+                                .size(14.0)
+                                .color(super::theme::INK),
+                        );
                         ui.label(
                             RichText::new("Install CLAP or LV2 plugins, then rescan.")
                                 .color(super::theme::MUTED),

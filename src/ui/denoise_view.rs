@@ -4,7 +4,7 @@ use egui::{RichText, Ui};
 
 use super::knob::Knob;
 use super::theme::{self, MUTED};
-use super::{PANEL_KNOB, knob_cell, knob_pitch, status_strip};
+use super::{PANEL_KNOB, knob_cell, knob_pitch, panel_footer, panel_well, status_strip};
 use crate::dsp::denoise::DenoiseParams;
 
 pub fn show(ui: &mut Ui, params: &DenoiseParams) {
@@ -14,23 +14,25 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
         RichText::new("RNNoise neural noise suppression. Adds a fixed 20 ms of latency.")
             .color(MUTED),
     );
-    ui.add_space(16.0);
+    ui.add_space(20.0);
     let vad = params.vad.get();
     let open = s.vad_threshold <= 0.0 || vad >= s.vad_threshold;
-    theme::well().show(ui, |ui| {
+    let voice = vad >= s.vad_threshold.max(0.5);
+    panel_well().show(ui, |ui| {
         ui.set_width(ui.available_width());
         let marker = (s.vad_threshold > 0.0).then_some(s.vad_threshold);
         status_strip(
             ui,
-            "VOICE",
-            vad >= s.vad_threshold.max(0.5),
+            if voice { "VOICE" } else { "NO VOICE" },
+            voice,
             (vad, marker, open),
             &format!("{:.0} %", vad * 100.0),
+            &[(0.0, "0"), (0.5, "50"), (1.0, "100 %")],
         )
         .on_hover_text("rnnoise's estimate that the current frame contains speech");
     });
-    ui.add_space(16.0);
-    theme::well().show(ui, |ui| {
+    ui.add_space(20.0);
+    panel_well().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -46,7 +48,7 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
                     format!("{v:.0} %")
                 }
             };
-            knob_cell(ui, pitch, |ui| {
+            knob_cell(ui, pitch, PANEL_KNOB, |ui| {
                 ui.add(
                     Knob::new(&mut strength, 0.0..=100.0, "STRENGTH", &pct)
                         .default(100.0)
@@ -54,7 +56,7 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
                 )
                 .on_hover_text("blend between the original and the denoised signal");
             });
-            knob_cell(ui, pitch, |ui| {
+            knob_cell(ui, pitch, PANEL_KNOB, |ui| {
                 ui.add(
                     Knob::new(&mut gate, 0.0..=99.0, "VOICE GATE", &gate_fmt)
                         .default(0.0)
@@ -80,6 +82,10 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
             });
         });
     });
+    panel_footer(
+        ui,
+        "Drag or scroll a knob, hold shift for fine steps, double-click to reset.",
+    );
     if s != before {
         params.set(&s);
     }

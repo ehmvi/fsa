@@ -10,38 +10,29 @@ pub mod theme;
 
 use egui::{Color32, RichText, Sense, Stroke, Ui, pos2, vec2};
 
-use theme::{BG, FAINT, INK, LINE, MUTED, SIGNAL, SURFACE_HI};
+use theme::{FAINT, INK, LINE, MUTED, SIGNAL, SURFACE_HI};
 
-/// toggle pill: amber when on (solid or tinted), grey outline when off
-pub fn pill(ui: &mut Ui, text: &str, on: bool, solid: bool, min_width: f32) -> egui::Response {
-    let (fg, fill, stroke) = if on && solid {
-        (BG, SIGNAL, Stroke::NONE)
-    } else if on {
-        (
-            SIGNAL,
-            SIGNAL.gamma_multiply(0.14),
-            Stroke::new(1.0, SIGNAL.gamma_multiply(0.55)),
-        )
-    } else {
-        (MUTED, Color32::TRANSPARENT, Stroke::new(1.0, LINE))
-    };
-    let button = egui::Button::new(RichText::new(text).font(theme::mono(11.0)).color(fg))
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(12.0)
-        .min_size(vec2(min_width, 24.0));
-    ui.add(button)
-}
+/// height of ghost buttons, and of the text fields next to them
+pub const CONTROL_H: f32 = 26.0;
 
 /// quiet outlined text button. `danger` turns the label red on hover.
 pub fn ghost(ui: &mut Ui, text: &str, enabled: bool, danger: bool) -> egui::Response {
+    ghost_impl(ui, text, enabled, danger, false)
+}
+
+/// a ghost button that stays tinted amber while `on` (solo, dynamic)
+pub fn ghost_toggle(ui: &mut Ui, text: &str, on: bool, enabled: bool) -> egui::Response {
+    ghost_impl(ui, text, enabled, false, on)
+}
+
+fn ghost_impl(ui: &mut Ui, text: &str, enabled: bool, danger: bool, on: bool) -> egui::Response {
     let font = egui::FontId::proportional(12.5);
     let width = ui
         .painter()
         .layout_no_wrap(text.to_string(), font.clone(), MUTED)
         .size()
         .x;
-    let size = vec2(width + 20.0, 24.0);
+    let size = vec2(width + 22.0, CONTROL_H);
     let sense = if enabled {
         Sense::click()
     } else {
@@ -49,22 +40,28 @@ pub fn ghost(ui: &mut Ui, text: &str, enabled: bool, danger: bool) -> egui::Resp
     };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let hovered = enabled && resp.hovered();
-    let color = match (enabled, hovered, danger) {
-        (false, _, _) => FAINT,
-        (true, true, true) => theme::ALERT,
-        (true, true, false) => INK,
-        (true, false, _) => MUTED,
+    let color = match (enabled, on, hovered, danger) {
+        (false, _, _, _) => FAINT,
+        (true, true, _, _) => SIGNAL,
+        (true, false, true, true) => theme::ALERT,
+        (true, false, true, false) => INK,
+        (true, false, false, _) => MUTED,
+    };
+    let (fill, stroke) = match (on && enabled, hovered) {
+        (true, false) => (SIGNAL.gamma_multiply(0.12), SIGNAL.gamma_multiply(0.5)),
+        (true, true) => (SIGNAL.gamma_multiply(0.2), SIGNAL.gamma_multiply(0.6)),
+        (false, true) => (theme::SURFACE, LINE),
+        (false, false) => (
+            Color32::TRANSPARENT,
+            if enabled { LINE } else { theme::BORDER },
+        ),
     };
     let painter = ui.painter();
     painter.rect(
         rect,
-        12.0,
-        if hovered {
-            theme::SURFACE
-        } else {
-            Color32::TRANSPARENT
-        },
-        Stroke::new(1.0, if enabled { LINE } else { theme::BORDER }),
+        CONTROL_H / 2.0,
+        fill,
+        Stroke::new(1.0, stroke),
         egui::StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(text.to_string(), font, color);
@@ -91,7 +88,7 @@ pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let enabled = ui.is_enabled();
     let track = if enabled {
         // a muted amber track; the cream thumb carries the "on"
-        lerp_color(SURFACE_HI, theme::SIGNAL_DIM, t)
+        lerp_color(SURFACE_HI, theme::SWITCH_ON, t)
     } else {
         SURFACE_HI.gamma_multiply(0.6)
     };
@@ -141,7 +138,7 @@ pub fn title(ui: &mut Ui, text: &str, dimmed: bool) {
 
 /// a status dot with a short mono label, e.g. "● OPEN"
 pub fn state_chip(ui: &mut Ui, text: &str, lit: bool) -> egui::Response {
-    chip(ui, text, lit, 84.0, Sense::hover())
+    chip(ui, text, lit, 96.0, Sense::hover())
 }
 
 /// the chip of `state_chip`, with a minimum width and any sense
@@ -187,7 +184,7 @@ pub fn chip(ui: &mut Ui, text: &str, lit: bool, min_width: f32, sense: Sense) ->
 }
 
 /// knob radius in the gate and denoise panels
-pub const PANEL_KNOB: f32 = 28.0;
+pub const PANEL_KNOB: f32 = 32.0;
 
 /// lays knobs out in equal columns (`columns` of them across the row), so the
 /// gate and denoise panels share one grid
@@ -201,7 +198,7 @@ pub fn knob_columns(
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for i in 0..count {
-            knob_cell(ui, pitch, |ui| add(ui, i));
+            knob_cell(ui, pitch, PANEL_KNOB, |ui| add(ui, i));
         }
     });
 }
@@ -212,9 +209,9 @@ pub fn knob_pitch(ui: &Ui, columns: usize) -> f32 {
 }
 
 /// one column of `knob_columns`, for rows that mix knobs with other things
-pub fn knob_cell(ui: &mut Ui, pitch: f32, add: impl FnOnce(&mut Ui)) {
+pub fn knob_cell(ui: &mut Ui, pitch: f32, radius: f32, add: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(
-        vec2(pitch, 2.0 * PANEL_KNOB + 40.0),
+        vec2(pitch, 2.0 * radius + 40.0),
         egui::Layout::top_down(egui::Align::Center),
         add,
     );
@@ -227,33 +224,98 @@ pub fn status_strip(
     chip_lit: bool,
     bar: (f32, Option<f32>, bool),
     readout: &str,
+    ticks: &[(f32, &str)],
 ) -> egui::Response {
-    ui.horizontal(|ui| {
-        let chip = state_chip(ui, chip_text, chip_lit);
-        ui.add_space(10.0);
-        let right = ui.max_rect().right();
-        let w = (right - ui.cursor().left() - 64.0).max(80.0);
-        let rect = level_bar(ui, w, bar.0, bar.1, bar.2);
-        ui.painter().text(
-            pos2(right, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            readout,
-            theme::mono(11.0),
-            MUTED,
-        );
-        chip
-    })
-    .inner
+    let resp = ui
+        .horizontal(|ui| {
+            let chip = state_chip(ui, chip_text, chip_lit);
+            ui.add_space(12.0);
+            let right = ui.max_rect().right();
+            let w = (right - ui.cursor().left() - 64.0).max(80.0);
+            let rect = level_bar_sized(ui, vec2(w, 12.0), bar.0, bar.1, bar.2);
+            let painter = ui.painter();
+            painter.text(
+                pos2(right, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                readout,
+                theme::mono(11.0),
+                MUTED,
+            );
+            // scale under the bar, in the space reserved below the row
+            let inner = rect.shrink(2.0);
+            for &(t, label) in ticks {
+                let align = if t <= 0.0 {
+                    egui::Align2::LEFT_TOP
+                } else if t >= 1.0 {
+                    egui::Align2::RIGHT_TOP
+                } else {
+                    egui::Align2::CENTER_TOP
+                };
+                painter.text(
+                    pos2(inner.left() + inner.width() * t, rect.bottom() + 8.0),
+                    align,
+                    label,
+                    theme::mono(9.5),
+                    theme::SUBTLE,
+                );
+            }
+            chip
+        })
+        .inner;
+    if !ticks.is_empty() {
+        ui.add_space(12.0);
+    }
+    resp
+}
+
+/// a quiet hint pinned to the bottom of a panel, where the eq has its bottom
+/// bar, so every panel has the same frame
+pub fn panel_footer(ui: &mut Ui, text: &str) {
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.add_space(4.0);
+        ui.label(RichText::new(text).size(12.5).color(theme::SUBTLE));
+    });
+}
+
+/// a well with the roomier padding of the gate and denoise panels
+pub fn panel_well() -> egui::Frame {
+    theme::well().inner_margin(egui::Margin::symmetric(20, 22))
+}
+
+/// a thin close cross, cream on hover
+pub fn close_button(ui: &mut Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    let color = if resp.hovered() { INK } else { theme::SUBTLE };
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 12.0, theme::SURFACE);
+    }
+    let r = rect.shrink(7.5);
+    let stroke = Stroke::new(1.5, color);
+    ui.painter()
+        .line_segment([r.left_top(), r.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([r.right_top(), r.left_bottom()], stroke);
+    resp
 }
 
 /// horizontal level bar. `t` and `marker` are 0..1; the fill is amber when
 /// `lit`, dim amber otherwise, and the marker (a threshold) is a cream tick.
 pub fn level_bar(ui: &mut Ui, width: f32, t: f32, marker: Option<f32>, lit: bool) -> egui::Rect {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+    level_bar_sized(ui, vec2(width, 10.0), t, marker, lit)
+}
+
+fn level_bar_sized(
+    ui: &mut Ui,
+    size: egui::Vec2,
+    t: f32,
+    marker: Option<f32>,
+    lit: bool,
+) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
     painter.rect(
         rect,
-        5.0,
+        size.y / 2.0,
         theme::BG,
         Stroke::new(1.0, theme::BORDER),
         egui::StrokeKind::Inside,
@@ -263,7 +325,11 @@ pub fn level_bar(ui: &mut Ui, width: f32, t: f32, marker: Option<f32>, lit: bool
     // nothing rather than a dot when there's (almost) no signal
     if w >= inner.height() {
         let fill = egui::Rect::from_min_max(inner.min, pos2(inner.left() + w, inner.bottom()));
-        painter.rect_filled(fill, 3.0, if lit { SIGNAL } else { theme::SIGNAL_DIM });
+        painter.rect_filled(
+            fill,
+            inner.height() / 2.0,
+            if lit { SIGNAL } else { theme::SIGNAL_DIM },
+        );
     }
     if let Some(m) = marker {
         let x = inner.left() + inner.width() * m.clamp(0.0, 1.0);

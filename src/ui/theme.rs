@@ -26,10 +26,12 @@ pub const INK: Color32 = Color32::from_rgb(0xe8, 0xe2, 0xd6);
 pub const MUTED: Color32 = Color32::from_rgb(0x96, 0x8f, 0x83);
 pub const FAINT: Color32 = Color32::from_rgb(0x5e, 0x59, 0x51);
 /// small secondary text: indices, scales, counts (readable where FAINT is not)
-pub const SUBTLE: Color32 = Color32::from_rgb(0x80, 0x7a, 0x6f);
+pub const SUBTLE: Color32 = Color32::from_rgb(0x8c, 0x86, 0x7a);
 pub const SIGNAL: Color32 = Color32::from_rgb(0xf0, 0xa8, 0x3e);
 /// the low end of meters and level bars
 pub const SIGNAL_DIM: Color32 = Color32::from_rgb(0x9a, 0x6a, 0x2a);
+/// the track of a switch that is on: calm, but still clearly amber
+pub const SWITCH_ON: Color32 = Color32::from_rgb(0xad, 0x77, 0x2d);
 /// errors, clipping, a missing plugin
 pub const ALERT: Color32 = Color32::from_rgb(0xe5, 0x6b, 0x52);
 

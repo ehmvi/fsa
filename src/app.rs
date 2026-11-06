@@ -842,8 +842,8 @@ impl eframe::App for App {
         let bar = egui::Frame::new()
             .fill(theme::BG)
             .inner_margin(egui::Margin {
-                left: 18,
-                right: 14,
+                left: 13,
+                right: 12,
                 top: 12,
                 bottom: 10,
             });
@@ -855,7 +855,7 @@ impl eframe::App for App {
             .frame(
                 egui::Frame::new()
                     .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(18, 7)),
+                    .inner_margin(egui::Margin::symmetric(14, 7)),
             )
             .show_separator_line(false)
             .show(ui, |ui| {
@@ -864,7 +864,7 @@ impl eframe::App for App {
                     let dot = if status.contains("error") {
                         ALERT
                     } else if status == "running" {
-                        SIGNAL
+                        theme::SUBTLE
                     } else {
                         FAINT
                     };
@@ -874,9 +874,12 @@ impl eframe::App for App {
                     let xruns = self.shared.xruns.load(Ordering::Relaxed);
                     if xruns > 0 {
                         ui.label(
-                            RichText::new(format!("· {xruns} underruns"))
-                                .font(theme::mono(11.0))
-                                .color(SIGNAL),
+                            RichText::new(format!(
+                                "· {xruns} underrun{}",
+                                if xruns == 1 { "" } else { "s" }
+                            ))
+                            .font(theme::mono(11.0))
+                            .color(SIGNAL),
                         );
                     }
                     if let Some(err) = &self.error {
