@@ -469,7 +469,15 @@ impl EqView {
             }
         }
         let ys: Vec<f32> = total.iter().map(|&db| self.y_of(rect, clamp(db))).collect();
-        fill_between(&painter, &xs, &ys, |_| y0, SIGNAL.gamma_multiply(0.09));
+        // cuts fade out towards the bottom so a low cut does not paint a slab
+        fill_fading(
+            &painter,
+            &xs,
+            &ys,
+            y0,
+            rect.bottom(),
+            SIGNAL.gamma_multiply(0.1),
+        );
         let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
         painter.add(egui::Shape::line(line, Stroke::new(2.5, SIGNAL)));
         painter.rect_stroke(rect, 10.0, Stroke::new(1.0, GRID), egui::StrokeKind::Inside);
@@ -604,9 +612,16 @@ impl EqView {
         // analyzer scale on the left: its own unit, quieter than the
         // gain scale the user edits
         if self.analyzer_mode != AnalyzerMode::Off {
-            let quiet = Color32::from_rgb(0x6b, 0x66, 0x5c);
+            let quiet = Color32::from_rgb(0x74, 0x6f, 0x65);
+            let zero = self.y_of(rect, 0.0);
             for db in [-20.0, -40.0, -60.0, -80.0] {
                 let y = rect.top() + (ANA_TOP - db) / ANA_SPAN * rect.height();
+                // keep clear of the 0 dB line of the gain scale
+                let y = if (y - zero).abs() < 9.0 {
+                    zero - 9.0
+                } else {
+                    y
+                };
                 painter.text(
                     pos2(rect.left() + 7.0, y),
                     egui::Align2::LEFT_CENTER,
@@ -917,13 +932,13 @@ impl EqView {
                 vec2(ui.available_width(), EDITOR_H),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.add_space(5.0);
+                    ui.add_space(19.0);
                     ui.label(
                         RichText::new("NO BAND SELECTED")
                             .font(theme::mono(11.5))
                             .color(theme::SUBTLE),
                     );
-                    ui.add_space(22.0);
+                    ui.add_space(14.0);
                     ui.label(RichText::new("Click a band on the graph to edit it.").color(MUTED));
                     ui.label(
                         RichText::new("Double-click to add one, right-click for every shape.")
@@ -989,16 +1004,22 @@ impl EqView {
                 {
                     params.set_solo((!solo).then_some(i));
                 }
+                ui.add_space(6.0);
                 if super::on_off(ui, b.on) {
                     b.on = !b.on;
                 }
+                ui.label(
+                    RichText::new("ON")
+                        .font(theme::mono(10.5))
+                        .color(theme::SUBTLE),
+                );
             });
         });
         // knobs on equal columns, like the gate and denoise panels: freq, gain,
         // q, the dynamic toggle, then the dynamics knobs when it's on
         let dynamic = b.is_dynamic();
-        let columns = if dynamic { 8 } else { 5 };
-        let pitch = (ui.available_width() / columns as f32).clamp(68.0, 132.0);
+        let columns = if dynamic { 8 } else { 4 };
+        let pitch = (ui.available_width() / columns as f32).clamp(68.0, 160.0);
         let r = BAND_KNOB;
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -1224,6 +1245,31 @@ fn fill_between(
     for (c, (&x, &y)) in xs.iter().zip(ys).enumerate() {
         mesh.colored_vertex(pos2(x, y), color);
         mesh.colored_vertex(pos2(x, base(c)), color);
+        if c > 0 {
+            let v = (c * 2) as u32;
+            mesh.add_triangle(v - 2, v - 1, v);
+            mesh.add_triangle(v - 1, v + 1, v);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// fills between a curve and the 0 db line; below the line the fill fades
+/// out towards `bottom`, so deep cuts stay light
+fn fill_fading(
+    painter: &egui::Painter,
+    xs: &[f32],
+    ys: &[f32],
+    y0: f32,
+    bottom: f32,
+    color: Color32,
+) {
+    let depth = (bottom - y0).max(1.0);
+    let mut mesh = Mesh::default();
+    for (c, (&x, &y)) in xs.iter().zip(ys).enumerate() {
+        let t = ((y - y0) / depth).clamp(0.0, 1.0);
+        mesh.colored_vertex(pos2(x, y), color.gamma_multiply(1.0 - 0.85 * t));
+        mesh.colored_vertex(pos2(x, y0), color);
         if c > 0 {
             let v = (c * 2) as u32;
             mesh.add_triangle(v - 2, v - 1, v);

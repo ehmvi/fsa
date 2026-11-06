@@ -6,7 +6,7 @@ use egui::{RichText, Ui};
 
 use super::knob::Knob;
 use super::theme::MUTED;
-use super::{PANEL_KNOB, knob_columns, panel_footer, panel_well, status_strip};
+use super::{PANEL_KNOB, knob_columns, panel_footer, panel_knob_well, panel_well, status_strip};
 use crate::dsp::gate::GateParams;
 use crate::dsp::lin_to_db;
 
@@ -57,9 +57,8 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
         )
         .on_hover_text("the detector level, with the threshold marked");
     });
-    ui.add_space(20.0);
-    panel_well().show(ui, |ui| {
-        ui.set_width(ui.available_width());
+    ui.add_space(28.0);
+    panel_knob_well(ui, |ui| {
         let db = |v: f32| format!("{v:.1} dB");
         let ms = |v: f32| {
             if v < 10.0 {

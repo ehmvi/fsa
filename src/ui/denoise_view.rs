@@ -4,7 +4,9 @@ use egui::{RichText, Ui};
 
 use super::knob::Knob;
 use super::theme::{self, MUTED};
-use super::{PANEL_KNOB, knob_cell, knob_pitch, panel_footer, panel_well, status_strip};
+use super::{
+    PANEL_KNOB, knob_cell, knob_pitch, panel_footer, panel_knob_well, panel_well, status_strip,
+};
 use crate::dsp::denoise::DenoiseParams;
 
 pub fn show(ui: &mut Ui, params: &DenoiseParams) {
@@ -31,9 +33,8 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
         )
         .on_hover_text("rnnoise's estimate that the current frame contains speech");
     });
-    ui.add_space(20.0);
-    panel_well().show(ui, |ui| {
-        ui.set_width(ui.available_width());
+    ui.add_space(28.0);
+    panel_knob_well(ui, |ui| {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             // same grid as the gate's knobs, so the panels line up
@@ -68,9 +69,9 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
             });
             s.strength = strength / 100.0;
             s.vad_threshold = if gate < 0.5 { 0.0 } else { gate / 100.0 };
-            ui.add_space(16.0);
+            // the explanation starts on the third column, centred on the knobs
             ui.vertical(|ui| {
-                ui.add_space(24.0);
+                ui.add_space(PANEL_KNOB + 2.0);
                 ui.label(
                     RichText::new(
                         "Strength blends the cleaned signal with the original. \

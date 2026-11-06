@@ -170,13 +170,15 @@ pub fn chip(ui: &mut Ui, text: &str, lit: bool, min_width: f32, sense: Sense) ->
         ),
         egui::StrokeKind::Inside,
     );
-    let dot = pos2(rect.left() + 13.0, rect.center().y);
+    // dot and label centred as one group in the fixed width
+    let left = rect.center().x - (galley.size().x + 14.0) / 2.0;
+    let dot = pos2(left + 3.5, rect.center().y);
     if lit {
         painter.circle_filled(dot, 6.0, SIGNAL.gamma_multiply(0.25));
     }
     painter.circle_filled(dot, 3.5, if lit { SIGNAL } else { FAINT });
     painter.galley(
-        pos2(rect.left() + 23.0, rect.center().y - galley.size().y / 2.0),
+        pos2(left + 14.0, rect.center().y - galley.size().y / 2.0),
         galley,
         color,
     );
@@ -184,7 +186,7 @@ pub fn chip(ui: &mut Ui, text: &str, lit: bool, min_width: f32, sense: Sense) ->
 }
 
 /// knob radius in the gate and denoise panels
-pub const PANEL_KNOB: f32 = 32.0;
+pub const PANEL_KNOB: f32 = 36.0;
 
 /// lays knobs out in equal columns (`columns` of them across the row), so the
 /// gate and denoise panels share one grid
@@ -232,7 +234,7 @@ pub fn status_strip(
             ui.add_space(12.0);
             let right = ui.max_rect().right();
             let w = (right - ui.cursor().left() - 64.0).max(80.0);
-            let rect = level_bar_sized(ui, vec2(w, 12.0), bar.0, bar.1, bar.2);
+            let rect = level_bar_sized(ui, vec2(w, 14.0), bar.0, bar.1, bar.2);
             let painter = ui.painter();
             painter.text(
                 pos2(right, rect.center().y),
@@ -263,7 +265,7 @@ pub fn status_strip(
         })
         .inner;
     if !ticks.is_empty() {
-        ui.add_space(12.0);
+        ui.add_space(4.0);
     }
     resp
 }
@@ -280,6 +282,23 @@ pub fn panel_footer(ui: &mut Ui, text: &str) {
 /// a well with the roomier padding of the gate and denoise panels
 pub fn panel_well() -> egui::Frame {
     theme::well().inner_margin(egui::Margin::symmetric(20, 22))
+}
+
+/// the knob well of the gate and denoise panels. it grows into the free
+/// height above the footer (within limits) and centres its row of knobs, so
+/// the panel reads as one block instead of a strip at the top.
+pub fn panel_knob_well(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    let row = 2.0 * PANEL_KNOB + 40.0;
+    // room left for the footer line and the gap above it
+    let height = (ui.available_height() - 76.0).clamp(row + 60.0, row + 140.0);
+    panel_well()
+        .inner_margin(egui::Margin::symmetric(20, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_height(height);
+            ui.add_space((height - row) / 2.0);
+            add(ui);
+        });
 }
 
 /// a thin close cross, cream on hover
