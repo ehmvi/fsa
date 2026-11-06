@@ -70,7 +70,8 @@ jobs:
           if-no-files-found: error
 
   macos:
-    runs-on: macos-14
+    # apple silicon; macos-14 was retired, the deployment target below keeps 11.0 support
+    runs-on: macos-latest
     env:
       # matches LSMinimumSystemVersion in assets/macos/Info.plist
       MACOSX_DEPLOYMENT_TARGET: "11.0"
