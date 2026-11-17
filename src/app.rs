@@ -15,7 +15,7 @@ use crate::config::{ChainEntry, Config, EqConfig};
 use crate::dsp::denoise::{Denoise, DenoiseParams};
 use crate::dsp::eq::{Eq, EqParams};
 use crate::dsp::gate::{Gate, GateParams};
-use crate::engine::{Command, EngineHandle, Passthrough, Slot, SlotState, Unit};
+use crate::engine::{Command, EngineHandle, MAX_SLOTS, Passthrough, Slot, SlotState, Unit};
 use crate::plugins::clap::{ClapPlugin, ClapUnit};
 use crate::plugins::lv2::{Lv2Host, Lv2Info, Lv2Plugin};
 use crate::plugins::scan::PluginInfo;
@@ -541,7 +541,25 @@ impl App {
         self.engine.send(Command::Move { id, after });
     }
 
+    /// whether the engine can take another slot. slots still fading out after
+    /// a remove hold their place until they come back, so they count too;
+    /// the engine hands back an insert it has no room for.
+    fn has_room(&self) -> bool {
+        self.chain.len() + self.awaiting.len() < MAX_SLOTS
+    }
+
+    fn chain_full(&mut self, name: &str) -> bool {
+        let full = !self.has_room();
+        if full {
+            self.error = Some(format!("{name}: the chain is full ({MAX_SLOTS} items)"));
+        }
+        full
+    }
+
     fn add_plugin(&mut self, info: &PluginInfo) {
+        if self.chain_full(&info.name) {
+            return;
+        }
         match ClapPlugin::load(info, None) {
             Ok((mut plugin, unit)) => {
                 let id = self.next_id;
@@ -570,6 +588,9 @@ impl App {
     }
 
     fn add_lv2(&mut self, info: &Lv2Info) {
+        if self.chain_full(&info.name) {
+            return;
+        }
         let host = self.lv2.get_or_insert_with(Lv2Host::new);
         match host.load(&info.uri, &Default::default()) {
             Ok((plugin, unit)) => {
@@ -774,8 +795,10 @@ impl App {
                 }
             });
         ui.add_space(8.0);
+        let room = self.has_room();
         if ui
-            .add(
+            .add_enabled(
+                room,
                 egui::Button::new(RichText::new("+   Add plugin").color(MUTED))
                     .stroke(Stroke::new(1.0, LINE))
                     .fill(Color32::TRANSPARENT)
@@ -783,6 +806,9 @@ impl App {
                     .min_size(egui::vec2(ui.available_width(), 34.0)),
             )
             .on_hover_text("add a CLAP or LV2 plugin to the end of the chain")
+            .on_disabled_hover_text(format!(
+                "the chain is full ({MAX_SLOTS} items); remove one to add another"
+            ))
             .clicked()
         {
             self.browser.open = true;
