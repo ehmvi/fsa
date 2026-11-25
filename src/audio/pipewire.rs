@@ -393,6 +393,11 @@ fn run(
             consumer,
             priming: true,
         })
+        .state_changed(|_, data, _old, new| {
+            if matches!(new, StreamState::Paused | StreamState::Unconnected) {
+                data.priming = true;
+            }
+        })
         .process(playback_process)
         .register()
         .context("playback listener")?;
@@ -563,10 +568,19 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
 
     let avail = d.consumer.slots();
     if d.priming && avail >= n + MARGIN {
+        // discard stale audio accumulated while idle before reading so the
+        // first block is fresh and leaves one quantum + margin of headroom
+        let keep = (2 * n + MARGIN).min(RING);
+        if avail > keep
+            && let Ok(chunk) = d.consumer.read_chunk(avail - keep)
+        {
+            chunk.commit_all();
+        }
         d.priming = false;
     }
     let mut written = 0;
     if !d.priming {
+        let avail = d.consumer.slots();
         if let Ok(chunk) = d.consumer.read_chunk(avail.min(n)) {
             let (a, b) = chunk.as_slices();
             for (dst, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(a.iter().chain(b)) {
@@ -579,10 +593,11 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
             d.priming = true;
             d.shared.xruns.fetch_add(1, Ordering::Relaxed);
         }
-        // latency crept up (e.g. after a period without consumers): drop the excess
+        // latency crept up: drop excess while keeping one quantum + margin of headroom
         let left = d.consumer.slots();
-        if left > n + 2 * MARGIN
-            && let Ok(chunk) = d.consumer.read_chunk(left - MARGIN)
+        let target = (n + MARGIN).min(RING);
+        if left > 2 * n + 2 * MARGIN
+            && let Ok(chunk) = d.consumer.read_chunk(left - target)
         {
             chunk.commit_all();
         }
