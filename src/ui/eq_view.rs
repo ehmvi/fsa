@@ -230,6 +230,7 @@ enum HeaderAction {
     Undo,
     Redo,
     Reset,
+    Preset(usize),
 }
 
 impl EqView {
@@ -1146,21 +1147,6 @@ impl EqView {
             {
                 params.output_gain.set(out);
             }
-            ui.add_space(10.0);
-            egui::ComboBox::from_id_salt("eq_presets")
-                .width(96.0)
-                .selected_text("Presets")
-                .show_ui(ui, |ui| {
-                    for preset in PRESETS {
-                        if ui
-                            .selectable_label(false, preset.name)
-                            .on_hover_text(preset.description)
-                            .clicked()
-                        {
-                            self.apply_bands(params, preset.bands());
-                        }
-                    }
-                });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
                 ui.label(
@@ -1184,8 +1170,8 @@ impl EqView {
         self.selected = None;
     }
 
-    /// undo, redo and reset, drawn in the panel header (right to left). the
-    /// click is applied by the next `show` so it lands in the undo history.
+    /// undo, redo, reset and presets, drawn in the panel header (right to left).
+    /// the click is applied by the next `show` so it lands in the undo history.
     pub fn header_actions(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 6.0;
         if super::ghost(ui, "Reset", true, true)
@@ -1206,6 +1192,20 @@ impl EqView {
         {
             self.action = Some(HeaderAction::Undo);
         }
+        egui::ComboBox::from_id_salt("eq_presets")
+            .width(92.0)
+            .selected_text("Presets")
+            .show_ui(ui, |ui| {
+                for (i, preset) in PRESETS.iter().enumerate() {
+                    if ui
+                        .selectable_label(false, preset.name)
+                        .on_hover_text(preset.description)
+                        .clicked()
+                    {
+                        self.action = Some(HeaderAction::Preset(i));
+                    }
+                }
+            });
     }
 
     fn apply_action(&mut self, params: &EqParams) -> bool {
@@ -1214,6 +1214,12 @@ impl EqView {
             Some(HeaderAction::Redo) => self.undo_redo(params, false),
             Some(HeaderAction::Reset) => {
                 self.apply_bands(params, default_bands());
+                false
+            }
+            Some(HeaderAction::Preset(i)) => {
+                if let Some(preset) = PRESETS.get(i) {
+                    self.apply_bands(params, preset.bands());
+                }
                 false
             }
             None => false,
@@ -1516,6 +1522,27 @@ mod tests {
         h.frame(vec![]);
         assert_eq!(h.params.snapshot().len(), 2);
         assert!((h.params.band(1).unwrap().freq / 3000.0 - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn preset_application_is_undoable() {
+        let mut h = Harness::new(&default_bands());
+        assert_eq!(h.params.snapshot().len(), 1);
+        // apply "Warm broadcast" (5 bands, including a dynamic de-ess band)
+        let idx = PRESETS
+            .iter()
+            .position(|p| p.name == "Warm broadcast")
+            .unwrap();
+        h.view.action = Some(HeaderAction::Preset(idx));
+        h.frame(vec![]);
+        let applied = h.params.snapshot();
+        assert_eq!(applied.len(), 5);
+        assert!(applied.iter().any(|b| b.is_dynamic()));
+
+        // undo restores the single default low-cut band
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
     }
 
     #[test]
