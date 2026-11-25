@@ -103,6 +103,125 @@ pub fn default_bands() -> Vec<Band> {
     }]
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Preset {
+    pub name: &'static str,
+    pub description: &'static str,
+    bands: fn() -> Vec<Band>,
+}
+
+impl Preset {
+    pub fn bands(self) -> Vec<Band> {
+        (self.bands)()
+    }
+}
+
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        name: "Low cut",
+        description: "80 Hz rumble filter only (default)",
+        bands: default_bands,
+    },
+    Preset {
+        name: "Voice clarity",
+        description: "trim mud, lift speech presence and air",
+        bands: || {
+            vec![
+                Band {
+                    slope: 18,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                    ..Band::new(Shape::LowCut, 85.0, 0.0)
+                },
+                Band {
+                    q: 1.2,
+                    ..Band::new(Shape::Bell, 280.0, -2.5)
+                },
+                Band {
+                    q: 1.0,
+                    ..Band::new(Shape::Bell, 3200.0, 2.5)
+                },
+                Band {
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                    ..Band::new(Shape::HighShelf, 10_000.0, 1.5)
+                },
+            ]
+        },
+    },
+    Preset {
+        name: "Warm broadcast",
+        description: "fuller lows, clean mids, gentle dynamic de-ess",
+        bands: || {
+            vec![
+                Band {
+                    slope: 18,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                    ..Band::new(Shape::LowCut, 70.0, 0.0)
+                },
+                Band {
+                    q: 1.0,
+                    ..Band::new(Shape::Bell, 140.0, 2.5)
+                },
+                Band {
+                    q: 1.4,
+                    ..Band::new(Shape::Bell, 350.0, -3.0)
+                },
+                Band {
+                    q: 1.2,
+                    ..Band::new(Shape::Bell, 3500.0, 2.0)
+                },
+                Band {
+                    q: 2.8,
+                    dynamics: Dynamics {
+                        on: true,
+                        threshold: -24.0,
+                        range: -5.0,
+                        attack_ms: 3.0,
+                        release_ms: 60.0,
+                    },
+                    ..Band::new(Shape::Bell, 6500.0, 0.0)
+                },
+            ]
+        },
+    },
+    Preset {
+        name: "Crisp & de-ess",
+        description: "tighten lows, boost articulation, tame sibilance",
+        bands: || {
+            vec![
+                Band {
+                    slope: 18,
+                    q: std::f32::consts::FRAC_1_SQRT_2,
+                    ..Band::new(Shape::LowCut, 100.0, 0.0)
+                },
+                Band {
+                    q: 1.3,
+                    ..Band::new(Shape::Bell, 240.0, -2.5)
+                },
+                Band {
+                    q: 1.1,
+                    ..Band::new(Shape::Bell, 3800.0, 3.0)
+                },
+                Band {
+                    q: 3.0,
+                    dynamics: Dynamics {
+                        on: true,
+                        threshold: -26.0,
+                        range: -6.0,
+                        attack_ms: 2.0,
+                        release_ms: 50.0,
+                    },
+                    ..Band::new(Shape::Bell, 7000.0, 0.0)
+                },
+            ]
+        },
+    },
+    Preset {
+        name: "Flat",
+        description: "clear all bands",
+        bands: Vec::new,
+    },
+];
+
 #[derive(Debug, Default)]
 pub struct BandParams {
     /// the slot holds a band
@@ -710,5 +829,30 @@ mod tests {
         params.post.read(&mut out);
         let last = (Tap::LEN + 999) as f32;
         assert_eq!(out, [last - 3.0, last - 2.0, last - 1.0, last]);
+    }
+
+    #[test]
+    fn presets_are_valid_and_stable() {
+        for preset in PRESETS {
+            let bands = preset.bands();
+            assert!(bands.len() <= MAX_BANDS, "{}", preset.name);
+            for b in &bands {
+                assert_eq!(
+                    *b,
+                    b.clamped(),
+                    "preset {} has out-of-range band",
+                    preset.name
+                );
+            }
+            let params = Arc::new(EqParams::new(&bands, 0.0));
+            let mut eq = Eq::new(params, FS);
+            let mut x = sine(1000.0, 0.25, 4096);
+            run(&mut eq, &mut x);
+            assert!(
+                x.iter().all(|s| s.is_finite()),
+                "preset {} produced non-finite output",
+                preset.name
+            );
+        }
     }
 }

@@ -216,6 +216,7 @@ enum RowAction {
     Move(usize, i32),
     Remove(usize),
     ToggleEditor(usize),
+    ClearEqSolo,
 }
 
 /// display name of a device, or a "missing" marker
@@ -322,6 +323,7 @@ fn chain_row(
     i: usize,
     len: usize,
     selected: bool,
+    eq_solo: bool,
 ) -> Option<RowAction> {
     let mut action = None;
     // buttons first (right to left) so the name truncates in the space that's left
@@ -367,6 +369,22 @@ fn chain_row(
             {
                 action = Some(RowAction::Move(i, -1));
             }
+            if matches!(item.kind, ItemKind::Eq) && eq_solo {
+                let resp = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("SOLO").font(theme::mono(9.5)).color(SIGNAL),
+                        )
+                        .fill(SIGNAL.gamma_multiply(0.14))
+                        .stroke(Stroke::new(1.0, SIGNAL.gamma_multiply(0.45)))
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .min_size(egui::vec2(0.0, 18.0)),
+                    )
+                    .on_hover_text("an EQ band is soloed — click to clear");
+                if resp.clicked() {
+                    action = Some(RowAction::ClearEqSolo);
+                }
+            }
             if let ItemKind::Plugin { plugin, .. } = &item.kind
                 && plugin.has_editor()
             {
@@ -382,8 +400,19 @@ fn chain_row(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let missing = matches!(item.kind, ItemKind::Missing(_));
-                let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(10.5));
-                ui.label(index.color(if selected { SIGNAL } else { theme::SUBTLE }));
+                let index = RichText::new(format!("{:02}", i + 1))
+                    .font(theme::mono(10.5))
+                    .color(if selected { SIGNAL } else { theme::SUBTLE });
+                if ui
+                    .add(
+                        egui::Label::new(index)
+                            .sense(egui::Sense::click())
+                            .selectable(false),
+                    )
+                    .clicked()
+                {
+                    action = Some(RowAction::Select);
+                }
                 if ui
                     .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
                     .inner
@@ -396,8 +425,16 @@ fn chain_row(
                     (false, true, false) => INK.gamma_multiply(0.88),
                     (false, false, _) => MUTED,
                 };
+                // span the remaining row width so clicking empty space still selects
+                let (rect, resp) =
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+                let mut label_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
                 let label = RichText::new(item.name()).size(13.5).color(color);
-                let resp = ui.add(egui::Button::new(label).frame(false).truncate());
+                label_ui.add(egui::Label::new(label).truncate().selectable(false));
                 if resp.on_hover_text(item.name()).clicked() {
                     action = Some(RowAction::Select);
                 }
@@ -718,7 +755,7 @@ impl App {
                 let bypass = self.shared.bypass.load(Ordering::Relaxed);
                 let text = if bypass { "BYPASSED" } else { "ACTIVE" };
                 if ui::chip(ui, text, !bypass, 104.0, egui::Sense::click())
-                    .on_hover_text("global bypass: output = raw input")
+                    .on_hover_text("global bypass: output = raw input (ctrl/cmd+b)")
                     .clicked()
                 {
                     self.shared.bypass.store(!bypass, Ordering::Relaxed);
@@ -742,6 +779,7 @@ impl App {
         ui.add_space(4.0);
         let mut action = None;
         let len = self.chain.len();
+        let eq_solo = self.eq.solo().is_some();
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 48.0)
             .show(ui, |ui| {
@@ -762,7 +800,7 @@ impl App {
                     {
                         let ui = &mut frame.content_ui;
                         ui.set_width(ui.available_width());
-                        if let Some(a) = chain_row(ui, item, i, len, selected) {
+                        if let Some(a) = chain_row(ui, item, i, len, selected, eq_solo) {
                             match a {
                                 RowAction::Select => self.selected = Some(item.id),
                                 other => action = Some(other),
@@ -825,6 +863,7 @@ impl App {
                     }
                 }
             }
+            Some(RowAction::ClearEqSolo) => self.eq.set_solo(None),
             Some(RowAction::Select) | None => {}
         }
     }
@@ -850,21 +889,29 @@ impl App {
                     ui.add_space(6.0);
                 }
                 if !item.enabled() {
-                    ui::state_chip(ui, "BYPASSED", false)
-                        .on_hover_text("switch it on in the chain list");
+                    if matches!(item.kind, ItemKind::Missing(_)) {
+                        ui::state_chip(ui, "BYPASSED", false)
+                            .on_hover_text("plugin could not be loaded");
+                    } else if ui::chip(ui, "BYPASSED", false, 96.0, egui::Sense::click())
+                        .on_hover_text("click to enable")
+                        .clicked()
+                    {
+                        item.state.enabled.store(true, Ordering::Relaxed);
+                    }
                 }
             });
         });
         ui.add_space(10.0);
+        let active = item.enabled() && !self.shared.bypass.load(Ordering::Relaxed);
         match &mut item.kind {
             ItemKind::Eq => {
-                self.eq_view.show(ui, &self.eq);
+                self.eq_view.show(ui, &self.eq, !self.browser.open);
             }
             ItemKind::Gate => {
-                ui::gate_view::show(ui, &self.gate);
+                ui::gate_view::show(ui, &self.gate, active);
             }
             ItemKind::Denoise => {
-                ui::denoise_view::show(ui, &self.denoise);
+                ui::denoise_view::show(ui, &self.denoise, active);
             }
             ItemKind::Plugin { plugin, .. } => {
                 if let Err(e) = ui::plugin_view::show(ui, plugin) {
@@ -883,6 +930,23 @@ impl App {
                 ui.label("its settings are kept in the config until you remove it.");
             }
         }
+    }
+
+    /// runs audio processing and plugin housekeeping without a gui until `stop` is set
+    pub fn run_headless(mut self, stop: &std::sync::atomic::AtomicBool) {
+        log::info!("running headless (send SIGINT or SIGTERM to stop)");
+        while !stop.load(Ordering::Relaxed) {
+            self.collect_garbage();
+            self.poll_plugins();
+            self.autosave();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        log::info!("shutting down");
+        let snap = self.snapshot();
+        if snap != self.saved {
+            self.save(snap);
+        }
+        self.teardown_plugins();
     }
 
     /// hands every plugin back to the main thread and deactivates it
@@ -929,6 +993,15 @@ impl eframe::App for App {
         }
         let editor_open = self.poll_plugins();
 
+        if !self.browser.open
+            && !ui::knob::other_widget_focused(ui.ctx())
+            && ui
+                .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::B))
+        {
+            let bypass = self.shared.bypass.load(Ordering::Relaxed);
+            self.shared.bypass.store(!bypass, Ordering::Relaxed);
+        }
+
         let bar = egui::Frame::new()
             .fill(theme::BG)
             .inner_margin(egui::Margin {
@@ -961,16 +1034,44 @@ impl eframe::App for App {
                     let (r, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
                     ui.painter().circle_filled(r.center(), 3.5, dot);
                     ui.label(RichText::new(status).font(theme::mono(11.0)).color(MUTED));
-                    let xruns = self.shared.xruns.load(Ordering::Relaxed);
-                    if xruns > 0 {
+                    let latency_ms = if !self.shared.bypass.load(Ordering::Relaxed)
+                        && self
+                            .chain
+                            .iter()
+                            .any(|c| matches!(c.kind, ItemKind::Denoise) && c.enabled())
+                    {
+                        20
+                    } else {
+                        0
+                    };
+                    if latency_ms > 0 {
                         ui.label(
-                            RichText::new(format!(
-                                "· {xruns} underrun{}",
-                                if xruns == 1 { "" } else { "s" }
-                            ))
-                            .font(theme::mono(11.0))
-                            .color(SIGNAL),
-                        );
+                            RichText::new(format!("· {latency_ms} ms latency"))
+                                .font(theme::mono(11.0))
+                                .color(theme::SUBTLE),
+                        )
+                        .on_hover_text("fixed processing latency added by Noise suppression");
+                    }
+                    let xruns = self.shared.xruns.load(Ordering::Relaxed);
+                    if xruns > 0
+                        && ui
+                            .add(
+                                egui::Label::new(
+                                    RichText::new(format!(
+                                        "· {xruns} underrun{}",
+                                        if xruns == 1 { "" } else { "s" }
+                                    ))
+                                    .font(theme::mono(11.0))
+                                    .color(SIGNAL),
+                                )
+                                .sense(egui::Sense::click())
+                                .selectable(false),
+                            )
+                            .on_hover_text("audio buffer underruns — click to clear")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                    {
+                        self.shared.xruns.store(0, Ordering::Relaxed);
                     }
                     if let Some(err) = &self.error {
                         ui.label(RichText::new(err).font(theme::mono(11.0)).color(ALERT));

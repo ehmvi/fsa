@@ -91,30 +91,42 @@ your voice isn't processed twice.
 - **Output** (macOS): the BlackHole device to play into.
 - **Test signal (no mic)** (macOS) in the input list plays a tone, to
   check the routing without a mic.
+- **Shortcuts**: `Ctrl/Cmd+B` toggles global bypass. Click a rotary knob to
+  adjust it with the arrow keys (`Shift` for fine steps, `Home` to reset).
+  Click a meter to clear a `CLIP` latch, or click the status bar underrun
+  counter to reset it.
 - Settings are saved to `~/.config/fsa/config.toml` (or under
   `$XDG_CONFIG_HOME` if set).
 
 Command-line options (see `fsa --help`):
 
 ```
---list                      list capture sources
+--list                      list capture sources (safe while fsa is running)
+--headless                  run audio processing without opening a window
 --input <name|auto|default> start on a source (name from --list)
 --channel left|right|mix    channel of the source to use (default: left)
 --config <path>             use another config file
+--version                   print the version
 ```
+
+`fsa --headless` is handy for running fsa as a background/login service; stop
+it cleanly with `SIGINT` or `SIGTERM`.
 
 ## Processing
 
 - **Noise suppression** with RNNoise, a strength control and an optional
-  voice gate. Adds 20 ms of latency.
+  voice gate. Adds 20 ms of latency (shown in the status bar while active).
 - **Equalizer** with up to 24 bands (bell, shelves, cuts, notch, band pass),
-  dynamic EQ per band and a spectrum analyzer. Double-click the graph to
-  add a band, drag to move it, scroll for Q, right-click for options.
+  starter voice presets (`Presets` in the header), dynamic EQ per band and a
+  spectrum analyzer. Double-click the graph to add a band, drag to move it,
+  scroll for Q, double-click a node to bypass it, right-click for options,
+  `S` to solo the selected band, `Delete`/`Backspace` to remove it, and
+  `Ctrl/Cmd+Z` / `Shift+Ctrl/Cmd+Z` to undo and redo.
 - **Noise gate** with hysteresis, hold and range.
 - **Plugins**: **Add plugin** lists the CLAP and LV2 effects installed in
   the standard plugin folders (and `$CLAP_PATH` / `$LV2_PATH`).
   CLAP plugins can open their own editor; LV2 plugins (x86_64 Linux only)
-  get generic controls.
+  get generic controls with parameter search and reset.
 
 ## Troubleshooting
 

@@ -89,6 +89,78 @@ impl Drop for Backend {
     }
 }
 
+/// lists input sources via the pipewire registry without creating any streams
+pub fn list_devices() -> anyhow::Result<Vec<Device>> {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).context("main loop")?;
+    let context = pw::context::ContextRc::new(&mainloop, None).context("context")?;
+    let core = context
+        .connect_rc(None)
+        .context("cannot connect to pipewire, is it running?")?;
+    let registry = core.get_registry_rc().context("registry")?;
+    let devices: Rc<RefCell<Vec<Device>>> = Rc::new(RefCell::new(Vec::new()));
+    let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    let _registry_listener = registry
+        .add_listener_local()
+        .global({
+            let devices = devices.clone();
+            move |global| {
+                if global.type_ != pw::types::ObjectType::Node {
+                    return;
+                }
+                let Some(props) = global.props else { return };
+                let class = props.get("media.class").unwrap_or_default();
+                let name = props.get("node.name").unwrap_or_default();
+                if !class.starts_with("Audio/Source") || name == SOURCE_NODE_NAME || name.is_empty()
+                {
+                    return;
+                }
+                let description = props
+                    .get("node.description")
+                    .or_else(|| props.get("node.nick"))
+                    .unwrap_or(name)
+                    .to_string();
+                let mut list = devices.borrow_mut();
+                list.retain(|d| d.id != global.id);
+                list.push(Device {
+                    id: global.id,
+                    name: name.to_string(),
+                    description,
+                });
+            }
+        })
+        .register();
+
+    let pending = core.sync(0).context("sync")?;
+    let _sync_listener = core
+        .add_listener_local()
+        .done({
+            let mainloop = mainloop.clone();
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    mainloop.quit();
+                }
+            }
+        })
+        .error({
+            let mainloop = mainloop.clone();
+            let error = error.clone();
+            move |id, _seq, res, msg| {
+                *error.borrow_mut() = Some(format!("pipewire error on {id}: {msg} ({res})"));
+                mainloop.quit();
+            }
+        })
+        .register();
+    mainloop.run();
+    if let Some(err) = error.borrow_mut().take() {
+        anyhow::bail!(err);
+    }
+    let mut list = std::mem::take(&mut *devices.borrow_mut());
+    list.sort_by(|a, b| a.description.cmp(&b.description));
+    Ok(list)
+}
+
 struct CaptureData {
     engine: Engine,
     shared: Arc<Shared>,
@@ -321,6 +393,11 @@ fn run(
             consumer,
             priming: true,
         })
+        .state_changed(|_, data, _old, new| {
+            if matches!(new, StreamState::Paused | StreamState::Unconnected) {
+                data.priming = true;
+            }
+        })
         .process(playback_process)
         .register()
         .context("playback listener")?;
@@ -491,10 +568,19 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
 
     let avail = d.consumer.slots();
     if d.priming && avail >= n + MARGIN {
+        // discard stale audio accumulated while idle before reading so the
+        // first block is fresh and leaves one quantum + margin of headroom
+        let keep = (2 * n + MARGIN).min(RING);
+        if avail > keep
+            && let Ok(chunk) = d.consumer.read_chunk(avail - keep)
+        {
+            chunk.commit_all();
+        }
         d.priming = false;
     }
     let mut written = 0;
     if !d.priming {
+        let avail = d.consumer.slots();
         if let Ok(chunk) = d.consumer.read_chunk(avail.min(n)) {
             let (a, b) = chunk.as_slices();
             for (dst, s) in out.as_chunks_mut::<4>().0.iter_mut().zip(a.iter().chain(b)) {
@@ -507,10 +593,11 @@ fn playback_process(stream: &pw::stream::Stream, d: &mut PlaybackData) {
             d.priming = true;
             d.shared.xruns.fetch_add(1, Ordering::Relaxed);
         }
-        // latency crept up (e.g. after a period without consumers): drop the excess
+        // latency crept up: drop excess while keeping one quantum + margin of headroom
         let left = d.consumer.slots();
-        if left > n + 2 * MARGIN
-            && let Ok(chunk) = d.consumer.read_chunk(left - MARGIN)
+        let target = (n + MARGIN).min(RING);
+        if left > 2 * n + 2 * MARGIN
+            && let Ok(chunk) = d.consumer.read_chunk(left - target)
         {
             chunk.commit_all();
         }

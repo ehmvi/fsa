@@ -5,8 +5,8 @@
 //! graph: double-click to add a band (near the edges: cuts), drag a node
 //! to move it (shift: fine; vertical drag on cuts, notches and band
 //! passes changes q), scroll over a node for q, double-click a node to
-//! bypass it, right-click for its menu, delete/backspace removes the
-//! selected band. ctrl/cmd+z undoes, shift+ctrl/cmd+z redoes.
+//! bypass it, right-click for its menu, s solos the selected band,
+//! delete/backspace removes it. ctrl/cmd+z undoes, shift+ctrl/cmd+z redoes.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +19,7 @@ use super::knob::Knob;
 use super::theme::{self, DEEP, FAINT, GRID, INK, LINE, MUTED, SIGNAL, SURFACE};
 use crate::audio::SAMPLE_RATE;
 use crate::config::{AnalyzerMode, EqConfig};
-use crate::dsp::eq::{Band, EqParams, MAX_BANDS, default_bands};
+use crate::dsp::eq::{Band, EqParams, MAX_BANDS, PRESETS, default_bands};
 use crate::dsp::filter::{self, Phi, SLOPES, Shape};
 
 const F_MIN: f32 = 10.0;
@@ -204,6 +204,41 @@ enum MenuTarget {
     Empty { freq: f32, gain: f32 },
 }
 
+struct GraphGrid {
+    left: f32,
+    width: f32,
+    xs: Vec<f32>,
+    freqs: Vec<f32>,
+    phis: Vec<Phi>,
+}
+
+impl GraphGrid {
+    fn new() -> Self {
+        Self {
+            left: f32::NAN,
+            width: f32::NAN,
+            xs: Vec::new(),
+            freqs: Vec::new(),
+            phis: Vec::new(),
+        }
+    }
+
+    fn update(&mut self, rect: Rect, fs: f32) {
+        if self.left == rect.left() && self.width == rect.width() && !self.xs.is_empty() {
+            return;
+        }
+        self.left = rect.left();
+        self.width = rect.width();
+        // columns: one per two pixels
+        let cols = ((rect.width() / 2.0) as usize).max(2);
+        self.xs = (0..=cols)
+            .map(|c| rect.left() + c as f32 * rect.width() / cols as f32)
+            .collect();
+        self.freqs = self.xs.iter().map(|&x| f_of(rect, x)).collect();
+        self.phis = self.freqs.iter().map(|&f| Phi::at(f, fs)).collect();
+    }
+}
+
 pub struct EqView {
     pub analyzer_mode: AnalyzerMode,
     /// +- db of the graph
@@ -221,6 +256,8 @@ pub struct EqView {
     below_graph: f32,
     /// where the graph was drawn last frame
     graph_rect: Rect,
+    /// cached x/freq/Phi columns for the current graph width
+    graph_grid: GraphGrid,
     /// a header button clicked this frame, applied by the next `show`
     action: Option<HeaderAction>,
 }
@@ -230,6 +267,7 @@ enum HeaderAction {
     Undo,
     Redo,
     Reset,
+    Preset(usize),
 }
 
 impl EqView {
@@ -250,6 +288,7 @@ impl EqView {
             gesture: None,
             below_graph: 140.0,
             graph_rect: Rect::NOTHING,
+            graph_grid: GraphGrid::new(),
             action: None,
         }
     }
@@ -279,7 +318,7 @@ impl EqView {
     }
 
     /// returns true if anything that belongs in the config changed
-    pub fn show(&mut self, ui: &mut Ui, params: &EqParams) -> bool {
+    pub fn show(&mut self, ui: &mut Ui, params: &EqParams, keys_enabled: bool) -> bool {
         let before: Slots = std::array::from_fn(|i| params.band(i));
         let view_before = (self.analyzer_mode, self.range, params.output_gain.get());
         params.analyzer.store(
@@ -318,29 +357,32 @@ impl EqView {
             });
         ui.add_space(10.0);
         self.bottom_bar(ui, params);
-        self.apply_action(params);
+        let mut history_nav = self.apply_action(params);
         // the strip wraps on narrow windows; the graph gives way next frame
         let below = ui.cursor().top() - top + 4.0;
         if (below - self.below_graph).abs() > 0.5 {
             self.below_graph = below;
             ui.ctx().request_repaint();
         }
-        self.keys(ui, params);
+        history_nav |= self.keys(ui, params, keys_enabled);
 
-        // group everything until the pointer is released into one undo step
+        // group everything until the pointer is released into one undo step,
+        // without re-recording states produced by undo/redo itself
         let after: Slots = std::array::from_fn(|i| params.band(i));
-        if after != before && self.gesture.is_none() {
-            self.gesture = Some(before);
-        }
-        if !ui.input(|i| i.pointer.any_down())
-            && let Some(g) = self.gesture.take()
-            && g != after
-        {
-            self.undo.push(g);
-            if self.undo.len() > UNDO_DEPTH {
-                self.undo.remove(0);
+        if !history_nav {
+            if after != before && self.gesture.is_none() {
+                self.gesture = Some(before);
             }
-            self.redo.clear();
+            if !ui.input(|i| i.pointer.any_down())
+                && let Some(g) = self.gesture.take()
+                && g != after
+            {
+                self.undo.push(g);
+                if self.undo.len() > UNDO_DEPTH {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+            }
         }
         after != before || view_before != (self.analyzer_mode, self.range, params.output_gain.get())
     }
@@ -357,14 +399,7 @@ impl EqView {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 10.0, DEEP);
 
-        // columns: one per two pixels
-        let cols = ((rect.width() / 2.0) as usize).max(2);
-        let xs: Vec<f32> = (0..=cols)
-            .map(|c| rect.left() + c as f32 * rect.width() / cols as f32)
-            .collect();
-        let freqs: Vec<f32> = xs.iter().map(|&x| f_of(rect, x)).collect();
-        let phis: Vec<Phi> = freqs.iter().map(|&f| Phi::at(f, fs)).collect();
-
+        self.graph_grid.update(rect, fs);
         self.grid(&painter, &ui.painter().clone(), rect);
 
         // analyzer
@@ -379,7 +414,8 @@ impl EqView {
             AnalyzerMode::PrePost => (true, true),
         };
         if show_pre {
-            self.analyzer.update(false, params, &freqs, dt);
+            self.analyzer
+                .update(false, params, &self.graph_grid.freqs, dt);
             let ys: Vec<f32> = self
                 .analyzer
                 .pre
@@ -389,14 +425,15 @@ impl EqView {
                 .collect();
             fill_between(
                 &painter,
-                &xs,
+                &self.graph_grid.xs,
                 &ys,
                 |_| rect.bottom(),
                 INK.gamma_multiply(0.04),
             );
         }
         if show_post {
-            self.analyzer.update(true, params, &freqs, dt);
+            self.analyzer
+                .update(true, params, &self.graph_grid.freqs, dt);
             let ys: Vec<f32> = self
                 .analyzer
                 .post
@@ -406,12 +443,18 @@ impl EqView {
                 .collect();
             fill_between(
                 &painter,
-                &xs,
+                &self.graph_grid.xs,
                 &ys,
                 |_| rect.bottom(),
                 INK.gamma_multiply(0.07),
             );
-            let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
+            let line: Vec<Pos2> = self
+                .graph_grid
+                .xs
+                .iter()
+                .zip(&ys)
+                .map(|(&x, &y)| pos2(x, y))
+                .collect();
             painter.add(egui::Shape::line(
                 line,
                 Stroke::new(1.0, INK.gamma_multiply(0.2)),
@@ -421,6 +464,8 @@ impl EqView {
         // per-band curves as heard (dynamic bands at their current gain)
         let hover = resp.hover_pos();
         let hit = hover.and_then(|p| self.hit(rect, bands, p));
+        let xs = &self.graph_grid.xs;
+        let phis = &self.graph_grid.phis;
         let mut total = vec![0.0f32; xs.len()];
         let y0 = self.y_of(rect, 0.0);
         let clamp = |db: f32| db.clamp(-self.range * 1.6, self.range * 1.6);
@@ -445,7 +490,7 @@ impl EqView {
             }
             let color = if b.on { SIGNAL } else { FAINT };
             let ys: Vec<f32> = curve.iter().map(|&c| self.y_of(rect, clamp(c))).collect();
-            fill_between(&painter, &xs, &ys, |_| y0, color.gamma_multiply(0.14));
+            fill_between(&painter, xs, &ys, |_| y0, color.gamma_multiply(0.14));
             let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
             painter.add(egui::Shape::dashed_line(
                 &line,
@@ -465,14 +510,14 @@ impl EqView {
                     .iter()
                     .map(|p| self.y_of(rect, clamp(hi.magnitude_db(p))))
                     .collect();
-                fill_between(&painter, &xs, &ya, |c| yb[c], color.gamma_multiply(0.12));
+                fill_between(&painter, xs, &ya, |c| yb[c], color.gamma_multiply(0.12));
             }
         }
         let ys: Vec<f32> = total.iter().map(|&db| self.y_of(rect, clamp(db))).collect();
         // cuts fade out towards the bottom so a low cut does not paint a slab
         fill_fading(
             &painter,
-            &xs,
+            xs,
             &ys,
             y0,
             rect.bottom(),
@@ -505,13 +550,25 @@ impl EqView {
             );
         }
         if let Some(s) = params.solo() {
-            painter.text(
-                rect.right_top() + vec2(-8.0, 6.0),
-                egui::Align2::RIGHT_TOP,
-                format!("SOLO BAND {}", s + 1),
-                theme::mono(11.0),
-                SIGNAL,
+            // sit left of the "dB" axis label at right_top() + (-4, 5)
+            let galley =
+                painter.layout_no_wrap(format!("SOLO BAND {}", s + 1), theme::mono(10.5), SIGNAL);
+            let pad = vec2(7.0, 2.5);
+            let pill = Rect::from_min_size(
+                pos2(
+                    rect.right() - 28.0 - galley.size().x - pad.x * 2.0,
+                    rect.top() + 5.0,
+                ),
+                galley.size() + pad * 2.0,
             );
+            painter.rect(
+                pill,
+                pill.height() * 0.5,
+                DEEP.gamma_multiply(0.9),
+                Stroke::new(1.0, SIGNAL.gamma_multiply(0.55)),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(pill.min + pad, galley, SIGNAL);
         }
         if bands.iter().all(Option::is_none) {
             painter.text(
@@ -957,9 +1014,20 @@ impl EqView {
                 .filter(|&k| params.band(k).is_some())
                 .collect();
             let at = used.iter().position(|&k| k == i).unwrap_or(0);
-            let arrow =
-                |t: &str| egui::Button::new(RichText::new(t).size(10.0).color(MUTED)).frame(false);
-            if ui.add(arrow("◀")).on_hover_text("previous band").clicked() {
+            let multi = used.len() > 1;
+            let arrow = |t: &str| {
+                egui::Button::new(RichText::new(t).size(10.0).color(if multi {
+                    MUTED
+                } else {
+                    FAINT
+                }))
+                .frame(false)
+            };
+            if ui
+                .add_enabled(multi, arrow("◀"))
+                .on_hover_text("previous band")
+                .clicked()
+            {
                 self.selected = Some(used[(at + used.len() - 1) % used.len()]);
             }
             ui.label(
@@ -967,7 +1035,11 @@ impl EqView {
                     .font(theme::mono(11.5))
                     .color(color),
             );
-            if ui.add(arrow("▶")).on_hover_text("next band").clicked() {
+            if ui
+                .add_enabled(multi, arrow("▶"))
+                .on_hover_text("next band")
+                .clicked()
+            {
                 self.selected = Some(used[(at + 1) % used.len()]);
             }
             ui.add_space(6.0);
@@ -999,7 +1071,7 @@ impl EqView {
                 }
                 let solo = params.solo() == Some(i);
                 if super::ghost_toggle(ui, "Solo", solo, true)
-                    .on_hover_text("listen to this band's region only")
+                    .on_hover_text("listen to this band's region only (s)")
                     .clicked()
                 {
                     params.set_solo((!solo).then_some(i));
@@ -1142,8 +1214,20 @@ impl EqView {
         });
     }
 
-    /// undo, redo and reset, drawn in the panel header (right to left). the
-    /// click is applied by the next `show` so it lands in the undo history.
+    fn apply_bands(&mut self, params: &EqParams, bands: Vec<Band>) {
+        params.set_solo(None);
+        for k in 0..MAX_BANDS {
+            params.set_band(k, None);
+        }
+        for b in bands {
+            params.add_band(b);
+        }
+        params.output_gain.set(0.0);
+        self.selected = None;
+    }
+
+    /// undo, redo, reset and presets, drawn in the panel header (right to left).
+    /// the click is applied by the next `show` so it lands in the undo history.
     pub fn header_actions(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 6.0;
         if super::ghost(ui, "Reset", true, true)
@@ -1164,56 +1248,79 @@ impl EqView {
         {
             self.action = Some(HeaderAction::Undo);
         }
+        egui::ComboBox::from_id_salt("eq_presets")
+            .width(92.0)
+            .selected_text("Presets")
+            .show_ui(ui, |ui| {
+                for (i, preset) in PRESETS.iter().enumerate() {
+                    if ui
+                        .selectable_label(false, preset.name)
+                        .on_hover_text(preset.description)
+                        .clicked()
+                    {
+                        self.action = Some(HeaderAction::Preset(i));
+                    }
+                }
+            });
     }
 
-    fn apply_action(&mut self, params: &EqParams) {
+    fn apply_action(&mut self, params: &EqParams) -> bool {
         match self.action.take() {
             Some(HeaderAction::Undo) => self.undo_redo(params, true),
             Some(HeaderAction::Redo) => self.undo_redo(params, false),
             Some(HeaderAction::Reset) => {
-                for k in 0..MAX_BANDS {
-                    params.set_band(k, None);
-                }
-                for b in default_bands() {
-                    params.add_band(b);
-                }
-                params.output_gain.set(0.0);
-                self.selected = None;
+                self.apply_bands(params, default_bands());
+                false
             }
-            None => {}
+            Some(HeaderAction::Preset(i)) => {
+                if let Some(preset) = PRESETS.get(i) {
+                    self.apply_bands(params, preset.bands());
+                }
+                false
+            }
+            None => false,
         }
     }
 
-    fn keys(&mut self, ui: &Ui, params: &EqParams) {
-        // leave keys alone while a text field has focus
-        if ui.ctx().memory(|m| m.focused().is_some()) {
-            return;
+    fn keys(&mut self, ui: &Ui, params: &EqParams, enabled: bool) -> bool {
+        // leave keys alone while a modal or text field has focus
+        if !enabled || super::knob::other_widget_focused(ui.ctx()) {
+            return false;
         }
-        let (undo, redo, delete) = ui.input(|i| {
+        let (undo, redo, delete, solo) = ui.input(|i| {
             let cmd = i.modifiers.command;
             (
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+                !i.modifiers.any() && i.key_pressed(egui::Key::S),
             )
         });
-        if undo {
-            self.undo_redo(params, true);
+        let history_nav = if undo {
+            self.undo_redo(params, true)
         } else if redo {
-            self.undo_redo(params, false);
+            self.undo_redo(params, false)
+        } else {
+            false
+        };
+        if solo && let Some(i) = self.selected {
+            params.set_solo((params.solo() != Some(i)).then_some(i));
         }
         if delete && let Some(i) = self.selected.take() {
             params.set_band(i, None);
         }
+        history_nav
     }
 
-    fn undo_redo(&mut self, params: &EqParams, undo: bool) {
+    fn undo_redo(&mut self, params: &EqParams, undo: bool) -> bool {
         let (from, to) = if undo {
             (&mut self.undo, &mut self.redo)
         } else {
             (&mut self.redo, &mut self.undo)
         };
-        let Some(state) = from.pop() else { return };
+        let Some(state) = from.pop() else {
+            return false;
+        };
         to.push(std::array::from_fn(|i| params.band(i)));
         for (i, b) in state.iter().enumerate() {
             if params.band(i) != *b {
@@ -1221,6 +1328,7 @@ impl EqView {
             }
         }
         self.gesture = None;
+        true
     }
 }
 
@@ -1289,6 +1397,7 @@ mod tests {
         view: EqView,
         params: Arc<EqParams>,
         time: f64,
+        keys_enabled: bool,
     }
 
     impl Harness {
@@ -1298,6 +1407,7 @@ mod tests {
                 view: EqView::new(&EqConfig::default()),
                 params: Arc::new(EqParams::new(bands, 0.0)),
                 time: 0.0,
+                keys_enabled: true,
             };
             h.frame(vec![]);
             h.frame(vec![]);
@@ -1312,9 +1422,9 @@ mod tests {
                 ..Default::default()
             };
             self.time += 1.0 / 60.0;
-            let (view, params) = (&mut self.view, &self.params);
+            let (view, params, keys_enabled) = (&mut self.view, &self.params, self.keys_enabled);
             let mut out = self.ctx.run_ui(input, |ui| {
-                view.show(ui, params);
+                view.show(ui, params, keys_enabled);
             });
             out.textures_delta.clear();
         }
@@ -1413,6 +1523,110 @@ mod tests {
         h.click(edge);
         h.click(edge);
         assert!(h.params.snapshot().iter().any(|b| b.shape == Shape::LowCut));
+    }
+
+    #[test]
+    fn undo_redo_and_reset() {
+        let mut h = Harness::new(&default_bands());
+        // step 1: add a band at 1 kHz, +6 dB
+        let p = h.at(1000.0, 6.0);
+        h.click(p);
+        h.click(p);
+        assert_eq!(h.params.snapshot().len(), 2);
+
+        // step 2: drag it to 3 kHz, -4 dB
+        let b = h.params.band(1).unwrap();
+        let (from, to) = (h.at(b.freq, b.gain), h.at(3000.0, -4.0));
+        h.drag(from, to);
+        let dragged = h.params.band(1).unwrap();
+        assert!((dragged.freq / 3000.0 - 1.0).abs() < 0.05);
+        assert!((dragged.gain + 4.0).abs() < 0.4);
+
+        // undo step 2 (keyboard): back to 1 kHz, +6 dB, and redo is populated
+        h.key(egui::Key::Z, egui::Modifiers::COMMAND);
+        let after_undo1 = h.params.band(1).expect("band still present after 1st undo");
+        assert!((after_undo1.freq / 1000.0 - 1.0).abs() < 0.05);
+        assert!((after_undo1.gain - 6.0).abs() < 0.4);
+        assert!(
+            !h.view.redo.is_empty(),
+            "redo stack should hold undone step"
+        );
+
+        // undo step 1 (header action): back to single default low-cut band
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
+        assert_eq!(h.view.redo.len(), 2);
+
+        // redo step 1 (header action): restores 1 kHz, +6 dB band
+        h.view.action = Some(HeaderAction::Redo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 2);
+        let after_redo1 = h.params.band(1).unwrap();
+        assert!((after_redo1.freq / 1000.0 - 1.0).abs() < 0.05);
+
+        // redo step 2 (keyboard): restores 3 kHz, -4 dB band
+        h.key(
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        );
+        let after_redo2 = h.params.band(1).unwrap();
+        assert!((after_redo2.freq / 3000.0 - 1.0).abs() < 0.05);
+        assert!((after_redo2.gain + 4.0).abs() < 0.4);
+
+        // reset via header action is undoable
+        h.view.action = Some(HeaderAction::Reset);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
+        assert!(h.view.redo.is_empty());
+
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 2);
+        assert!((h.params.band(1).unwrap().freq / 3000.0 - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn preset_application_is_undoable() {
+        let mut h = Harness::new(&default_bands());
+        assert_eq!(h.params.snapshot().len(), 1);
+        // apply "Warm broadcast" (5 bands, including a dynamic de-ess band)
+        let idx = PRESETS
+            .iter()
+            .position(|p| p.name == "Warm broadcast")
+            .unwrap();
+        h.view.action = Some(HeaderAction::Preset(idx));
+        h.frame(vec![]);
+        let applied = h.params.snapshot();
+        assert_eq!(applied.len(), 5);
+        assert!(applied.iter().any(|b| b.is_dynamic()));
+
+        // undo restores the single default low-cut band
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn solo_shortcut_and_modal_key_guard() {
+        let mut h = Harness::new(&default_bands());
+        // select band 0
+        let b = h.params.band(0).unwrap();
+        h.click(h.at(b.freq, 0.0));
+        assert_eq!(h.view.selected, Some(0));
+
+        // s toggles solo on the selected band
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), Some(0));
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), None);
+
+        // when a modal is open (keys_enabled = false), s and delete do nothing
+        h.keys_enabled = false;
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), None);
+        h.key(egui::Key::Delete, egui::Modifiers::NONE);
+        assert!(h.params.band(0).is_some());
     }
 
     #[test]

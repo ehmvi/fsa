@@ -10,6 +10,17 @@ use super::theme::{self, INK, LINE, MUTED, SIGNAL, SURFACE, SURFACE_HI};
 const START: f32 = std::f32::consts::PI * 0.75;
 const SWEEP: f32 = std::f32::consts::PI * 1.5;
 
+fn focus_key() -> egui::Id {
+    egui::Id::new("fsa_focused_knob")
+}
+
+/// true when a widget other than a rotary knob holds keyboard focus (e.g. a
+/// text field or DragValue editor), so letter/delete shortcuts should yield
+pub fn other_widget_focused(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused())
+        .is_some_and(|id| ctx.data(|d| d.get_temp::<egui::Id>(focus_key())) != Some(id))
+}
+
 pub struct Knob<'a> {
     value: &'a mut f32,
     range: RangeInclusive<f32>,
@@ -91,6 +102,10 @@ impl Widget for Knob<'_> {
         let enabled = ui.is_enabled();
         let mut t = self.t_of(*self.value);
         if enabled {
+            if resp.clicked() || resp.drag_started() {
+                resp.request_focus();
+                ui.data_mut(|d| d.insert_temp(focus_key(), resp.id));
+            }
             let fine = ui.input(|i| i.modifiers.shift);
             if resp.dragged() {
                 let speed = if fine { 0.0008 } else { 0.005 };
@@ -107,6 +122,33 @@ impl Widget for Knob<'_> {
                     resp.mark_changed();
                 }
             }
+            if resp.has_focus() {
+                ui.data_mut(|d| d.insert_temp(focus_key(), resp.id));
+                let (inc, dec, home, esc) = ui.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowRight),
+                        i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowLeft),
+                        i.key_pressed(egui::Key::Home),
+                        i.key_pressed(egui::Key::Escape),
+                    )
+                });
+                let step = if fine { 0.004 } else { 0.02 };
+                if esc {
+                    resp.surrender_focus();
+                } else if inc {
+                    t = (t + step).clamp(0.0, 1.0);
+                    *self.value = self.value_at(t);
+                    resp.mark_changed();
+                } else if dec {
+                    t = (t - step).clamp(0.0, 1.0);
+                    *self.value = self.value_at(t);
+                    resp.mark_changed();
+                } else if home {
+                    *self.value = self.default;
+                    t = self.t_of(self.default);
+                    resp.mark_changed();
+                }
+            }
             if resp.double_clicked() {
                 *self.value = self.default;
                 t = self.t_of(self.default);
@@ -114,7 +156,8 @@ impl Widget for Knob<'_> {
             }
         }
 
-        let active = enabled && (resp.hovered() || resp.dragged());
+        let focused = enabled && resp.has_focus();
+        let active = enabled && (resp.hovered() || resp.dragged() || focused);
         let painter = ui.painter_at(rect.expand(4.0));
         let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.35) };
         painter.text(
@@ -170,7 +213,14 @@ impl Widget for Knob<'_> {
             c,
             cap,
             dim(if active { SURFACE_HI } else { SURFACE }),
-            Stroke::new(1.0, dim(LINE)),
+            Stroke::new(
+                1.0,
+                dim(if focused {
+                    SIGNAL.gamma_multiply(0.75)
+                } else {
+                    LINE
+                }),
+            ),
         );
         let a = START + SWEEP * t;
         let dir = vec2(a.cos(), a.sin());
@@ -185,6 +235,88 @@ impl Widget for Knob<'_> {
             theme::mono(if r > 20.0 { 12.0 } else { 11.0 }),
             dim(if active { self.color } else { INK }),
         );
-        resp.on_hover_text("drag or scroll (shift: fine), double-click: reset")
+        resp.on_hover_text("drag, scroll, or arrow keys (shift: fine); double-click/home: reset")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_keys_and_home_adjust_focused_knob() {
+        let ctx = egui::Context::default();
+        let mut value = 50.0f32;
+        let fmt = |v: f32| format!("{v:.0}");
+
+        let run = |events: Vec<egui::Event>, v: &mut f32| -> egui::Pos2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 200.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut center = egui::Pos2::ZERO;
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = ui.add(Knob::new(v, 0.0..=100.0, "TEST", &fmt).default(25.0));
+                center = r.rect.center();
+            });
+            out.textures_delta.clear();
+            center
+        };
+
+        let center = run(vec![], &mut value);
+        // click to focus
+        run(
+            vec![
+                egui::Event::PointerMoved(center),
+                egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut value,
+        );
+        run(
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut value,
+        );
+        assert!(
+            !other_widget_focused(&ctx),
+            "focused knob should not block non-text shortcuts"
+        );
+        // ArrowUp steps +2%
+        run(
+            vec![egui::Event::Key {
+                key: egui::Key::ArrowUp,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            &mut value,
+        );
+        assert!((value - 52.0).abs() < 0.01, "value={value}");
+        // Home resets to default
+        run(
+            vec![egui::Event::Key {
+                key: egui::Key::Home,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            &mut value,
+        );
+        assert!((value - 25.0).abs() < 0.01, "value={value}");
     }
 }
