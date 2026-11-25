@@ -346,6 +346,22 @@ fn device_info(d: &CpalDevice) -> Option<Device> {
     })
 }
 
+/// lists input devices without starting any audio streams
+pub fn list_devices() -> anyhow::Result<Vec<Device>> {
+    let host = cpal::default_host();
+    let mut inputs: Vec<Device> = host
+        .input_devices()
+        .context("failed to list input devices")?
+        .filter_map(|d| device_info(&d))
+        .collect();
+    inputs.push(Device {
+        id: 0,
+        name: TEST_SIGNAL.into(),
+        description: "Test signal (no mic)".into(),
+    });
+    Ok(inputs)
+}
+
 fn refresh_devices(st: &mut State) {
     let mut inputs: Vec<Device> = st
         .host

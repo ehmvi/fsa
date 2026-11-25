@@ -4,17 +4,17 @@
 #[cfg(target_os = "linux")]
 mod pipewire;
 #[cfg(target_os = "linux")]
-pub use self::pipewire::Backend;
+pub use self::pipewire::{Backend, list_devices};
 
 #[cfg(target_os = "macos")]
 mod coreaudio;
 #[cfg(target_os = "macos")]
-pub use self::coreaudio::Backend;
+pub use self::coreaudio::{Backend, list_devices};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod stub;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub use self::stub::Backend;
+pub use self::stub::{Backend, list_devices};
 
 mod picker;
 pub use self::picker::{InputChoice, Picker};

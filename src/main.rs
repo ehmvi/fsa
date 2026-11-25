@@ -7,8 +7,8 @@ mod plugins;
 mod shared;
 mod ui;
 
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 
@@ -17,53 +17,105 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::shared::{InputChannel, Shared};
 
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Run,
+    List,
+    Help,
+    Version,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Cli {
+    mode: Mode,
+    config_path: PathBuf,
+    input: Option<String>,
+    channel: Option<InputChannel>,
+}
+
+fn parse_args<I>(args: I) -> anyhow::Result<Cli>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut cli = Cli {
+        mode: Mode::Run,
+        config_path: config::default_path(),
+        input: None,
+        channel: None,
+    };
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--input" | "-i" => {
+                cli.input =
+                    Some(args.next().ok_or_else(|| {
+                        anyhow!("--input expects a device name, auto, or default")
+                    })?);
+            }
+            "--channel" | "-c" => {
+                let Some(ch) = args.next().as_deref().and_then(InputChannel::parse) else {
+                    bail!("--channel expects left, right or mix");
+                };
+                cli.channel = Some(ch);
+            }
+            "--config" => {
+                cli.config_path = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--config expects a path"))?
+                    .into()
+            }
+            "--list" | "-l" => cli.mode = Mode::List,
+            "--version" | "-V" => {
+                cli.mode = Mode::Version;
+                return Ok(cli);
+            }
+            "--help" | "-h" => {
+                cli.mode = Mode::Help;
+                return Ok(cli);
+            }
+            other => bail!("unknown argument {other:?}, see --help"),
+        }
+    }
+    Ok(cli)
+}
+
 fn main() -> anyhow::Result<()> {
     // safety: nothing else is running yet
     unsafe { plugins::lv2::export_search_path() };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let mut config_path = config::default_path();
-    let mut input = None;
-    let mut channel = None;
-    let mut list = false;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--input" | "-i" => input = args.next(),
-            "--channel" | "-c" => {
-                let Some(ch) = args.next().as_deref().and_then(InputChannel::parse) else {
-                    bail!("--channel expects left, right or mix");
-                };
-                channel = Some(ch);
-            }
-            "--config" => {
-                config_path = args
-                    .next()
-                    .ok_or_else(|| anyhow!("--config expects a path"))?
-                    .into()
-            }
-            "--list" | "-l" => list = true,
-            "--help" | "-h" => {
-                println!(
-                    "usage: fsa [--input <node.name>|auto|default] [--channel left|right|mix] [--config <path>] [--list]\n\
-                     settings are stored in {}",
-                    config::default_path().display()
-                );
-                return Ok(());
-            }
-            other => bail!("unknown argument {other:?}, see --help"),
+    let cli = parse_args(std::env::args().skip(1))?;
+    match cli.mode {
+        Mode::Help => {
+            println!(
+                "usage: fsa [--input <node.name>|auto|default] [--channel left|right|mix] [--config <path>] [--list] [--version]\n\
+                 settings are stored in {}",
+                config::default_path().display()
+            );
+            return Ok(());
         }
+        Mode::Version => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Mode::List => {
+            for d in audio::list_devices()? {
+                println!("{}\t{}", d.name, d.description);
+            }
+            return Ok(());
+        }
+        Mode::Run => {}
     }
 
-    let mut config = Config::load(&config_path);
-    if let Some(name) = input {
+    let mut config = Config::load(&cli.config_path);
+    if let Some(name) = cli.input {
         config.set_input_choice(&match name.as_str() {
             "auto" => audio::InputChoice::Auto,
             "default" => audio::InputChoice::Default,
             _ => audio::InputChoice::Device(name),
         });
     }
-    if let Some(ch) = channel {
+    if let Some(ch) = cli.channel {
         config.input_channel = ch;
     }
 
@@ -80,14 +132,6 @@ fn main() -> anyhow::Result<()> {
         config.picker(),
         config.output.clone(),
     )?;
-
-    if list {
-        std::thread::sleep(Duration::from_millis(500));
-        for d in shared.devices.lock().unwrap().iter() {
-            println!("{}\t{}", d.name, d.description);
-        }
-        return Ok(());
-    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -113,9 +157,38 @@ fn main() -> anyhow::Result<()> {
                 engine_handle,
                 setup,
                 config,
-                config_path,
+                cli.config_path,
             )))
         }),
     )
     .map_err(|e| anyhow!("gui: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> anyhow::Result<Cli> {
+        parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn missing_input_value_errors() {
+        assert!(parse(&["--input"]).is_err());
+        assert!(parse(&["-i"]).is_err());
+    }
+
+    #[test]
+    fn parses_modes_and_flags() {
+        assert_eq!(parse(&["--version"]).unwrap().mode, Mode::Version);
+        assert_eq!(parse(&["-V"]).unwrap().mode, Mode::Version);
+        assert_eq!(parse(&["--list"]).unwrap().mode, Mode::List);
+        assert_eq!(parse(&["--help"]).unwrap().mode, Mode::Help);
+
+        let cli = parse(&["-i", "usb.mic", "-c", "left", "--config", "/tmp/a.toml"]).unwrap();
+        assert_eq!(cli.mode, Mode::Run);
+        assert_eq!(cli.input.as_deref(), Some("usb.mic"));
+        assert_eq!(cli.channel, Some(InputChannel::Left));
+        assert_eq!(cli.config_path, PathBuf::from("/tmp/a.toml"));
+    }
 }

@@ -89,6 +89,78 @@ impl Drop for Backend {
     }
 }
 
+/// lists input sources via the pipewire registry without creating any streams
+pub fn list_devices() -> anyhow::Result<Vec<Device>> {
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None).context("main loop")?;
+    let context = pw::context::ContextRc::new(&mainloop, None).context("context")?;
+    let core = context
+        .connect_rc(None)
+        .context("cannot connect to pipewire, is it running?")?;
+    let registry = core.get_registry_rc().context("registry")?;
+    let devices: Rc<RefCell<Vec<Device>>> = Rc::new(RefCell::new(Vec::new()));
+    let error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    let _registry_listener = registry
+        .add_listener_local()
+        .global({
+            let devices = devices.clone();
+            move |global| {
+                if global.type_ != pw::types::ObjectType::Node {
+                    return;
+                }
+                let Some(props) = global.props else { return };
+                let class = props.get("media.class").unwrap_or_default();
+                let name = props.get("node.name").unwrap_or_default();
+                if !class.starts_with("Audio/Source") || name == SOURCE_NODE_NAME || name.is_empty()
+                {
+                    return;
+                }
+                let description = props
+                    .get("node.description")
+                    .or_else(|| props.get("node.nick"))
+                    .unwrap_or(name)
+                    .to_string();
+                let mut list = devices.borrow_mut();
+                list.retain(|d| d.id != global.id);
+                list.push(Device {
+                    id: global.id,
+                    name: name.to_string(),
+                    description,
+                });
+            }
+        })
+        .register();
+
+    let pending = core.sync(0).context("sync")?;
+    let _sync_listener = core
+        .add_listener_local()
+        .done({
+            let mainloop = mainloop.clone();
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    mainloop.quit();
+                }
+            }
+        })
+        .error({
+            let mainloop = mainloop.clone();
+            let error = error.clone();
+            move |id, _seq, res, msg| {
+                *error.borrow_mut() = Some(format!("pipewire error on {id}: {msg} ({res})"));
+                mainloop.quit();
+            }
+        })
+        .register();
+    mainloop.run();
+    if let Some(err) = error.borrow_mut().take() {
+        anyhow::bail!(err);
+    }
+    let mut list = std::mem::take(&mut *devices.borrow_mut());
+    list.sort_by(|a, b| a.description.cmp(&b.description));
+    Ok(list)
+}
+
 struct CaptureData {
     engine: Engine,
     shared: Arc<Shared>,

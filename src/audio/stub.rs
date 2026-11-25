@@ -79,3 +79,11 @@ impl Drop for Backend {
         }
     }
 }
+
+pub fn list_devices() -> anyhow::Result<Vec<Device>> {
+    Ok(vec![Device {
+        id: 0,
+        name: "test.signal".into(),
+        description: "Test signal".into(),
+    }])
+}
