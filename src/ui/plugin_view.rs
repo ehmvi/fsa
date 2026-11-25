@@ -116,11 +116,25 @@ impl Choice {
             Choice::Lv2(p) => p.uri.clone(),
         }
     }
+
+    fn matches(&self, query: &str) -> bool {
+        let name = self.name().to_lowercase();
+        let vendor = self.vendor().to_lowercase();
+        let format = self.format().to_lowercase();
+        query
+            .split_whitespace()
+            .all(|term| name.contains(term) || vendor.contains(term) || format == term)
+    }
 }
+
+const MODAL_W: f32 = 460.0;
+const LIST_H: f32 = 320.0;
+const ROW_H: f32 = 26.0;
 
 #[derive(Default)]
 pub struct Browser {
     pub open: bool,
+    was_open: bool,
     filter: String,
     /// none until scanned
     plugins: Option<Vec<Choice>>,
@@ -154,8 +168,11 @@ impl Browser {
     /// returns the plugin the user picked
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Choice> {
         if !self.open {
+            self.was_open = false;
             return None;
         }
+        let just_opened = !self.was_open;
+        self.was_open = true;
         let mut picked = None;
         let mut close = false;
         let frame = super::theme::card()
@@ -165,7 +182,8 @@ impl Browser {
             .backdrop_color(egui::Color32::from_black_alpha(150))
             .frame(frame)
             .show(ctx, |ui| {
-                ui.set_width(420.0);
+                ui.set_width(MODAL_W);
+                ui.set_max_width(MODAL_W);
                 // same header as the panels: title over the amber rule
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| super::title(ui, "Add plugin", false));
@@ -182,13 +200,16 @@ impl Browser {
                 ui.horizontal(|ui| {
                     // search field and rescan share one height and the full width
                     let rescan_w = 76.0;
-                    ui.add(
+                    let search = ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
                             .hint_text("Search by name, vendor or format…")
                             .margin(egui::Margin::symmetric(10, 4))
                             .min_size(egui::vec2(0.0, super::CONTROL_H))
                             .desired_width(ui.available_width() - rescan_w),
                     );
+                    if just_opened {
+                        search.request_focus();
+                    }
                     if super::ghost(ui, "Rescan", true, false)
                         .on_hover_text("look for newly installed plugins")
                         .clicked()
@@ -198,24 +219,48 @@ impl Browser {
                     }
                 });
                 ui.add_space(4.0);
-                let caption = RichText::new("SEARCH PATHS")
-                    .font(super::theme::mono(10.5))
-                    .color(super::theme::MUTED);
-                egui::CollapsingHeader::new(caption)
-                    .id_salt("search_paths")
-                    .show(ui, |ui| {
-                        for (format, paths) in [
-                            ("CLAP", search_paths()),
-                            ("LV2", crate::plugins::lv2::search_paths()),
-                        ] {
-                            ui.label(RichText::new(format).small().strong());
-                            for p in paths {
-                                let text =
-                                    RichText::new(p.display().to_string()).small().monospace();
-                                ui.label(if p.is_dir() { text } else { text.weak() });
+                let filter = self.filter.trim().to_lowercase();
+                let filtered: Vec<&Choice> = self
+                    .plugins
+                    .as_deref()
+                    .map(|list| list.iter().filter(|p| p.matches(&filter)).collect())
+                    .unwrap_or_default();
+                let total = self.plugins.as_ref().map_or(0, Vec::len);
+
+                ui.horizontal(|ui| {
+                    let caption = RichText::new("SEARCH PATHS")
+                        .font(super::theme::mono(10.5))
+                        .color(super::theme::MUTED);
+                    egui::CollapsingHeader::new(caption)
+                        .id_salt("search_paths")
+                        .show(ui, |ui| {
+                            for (format, paths) in [
+                                ("CLAP", search_paths()),
+                                ("LV2", crate::plugins::lv2::search_paths()),
+                            ] {
+                                ui.label(RichText::new(format).small().strong());
+                                for p in paths {
+                                    let text =
+                                        RichText::new(p.display().to_string()).small().monospace();
+                                    ui.label(if p.is_dir() { text } else { text.weak() });
+                                }
                             }
-                        }
-                    });
+                        });
+                    if self.plugins.is_some() && total > 0 {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            let label = if filter.is_empty() {
+                                format!("{total} plugins")
+                            } else {
+                                format!("{} / {total}", filtered.len())
+                            };
+                            ui.label(
+                                RichText::new(label)
+                                    .font(super::theme::mono(10.5))
+                                    .color(super::theme::SUBTLE),
+                            );
+                        });
+                    }
+                });
                 ui.separator();
                 let Some(plugins) = &self.plugins else {
                     ui.horizontal(|ui| {
@@ -242,39 +287,94 @@ impl Browser {
                     ui.add_space(24.0);
                     return;
                 }
-                let filter = self.filter.to_lowercase();
+                if filtered.is_empty() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(MODAL_W, LIST_H),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_size(egui::vec2(MODAL_W, LIST_H));
+                            ui.add_space(LIST_H * 0.32);
+                            ui.label(
+                                RichText::new("No matching plugins")
+                                    .size(14.0)
+                                    .color(super::theme::INK),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("Try a different name, vendor, or format.")
+                                    .color(super::theme::MUTED),
+                            );
+                            ui.add_space(12.0);
+                            if super::ghost(ui, "Clear search", true, false).clicked() {
+                                self.filter.clear();
+                            }
+                        },
+                    );
+                    return;
+                }
+                // fixed height keeps the modal anchored while the user filters
                 egui::ScrollArea::vertical()
-                    .auto_shrink([false, true])
-                    .max_height(320.0)
-                    .show(ui, |ui| {
-                        for p in plugins.iter().filter(|p| {
-                            filter.is_empty()
-                                || p.name().to_lowercase().contains(&filter)
-                                || p.vendor().to_lowercase().contains(&filter)
-                                || p.format().to_lowercase() == filter
-                        }) {
-                            ui.horizontal(|ui| {
-                                ui.add_sized(
-                                    [40.0, 18.0],
-                                    egui::Label::new(RichText::new(p.format()).small().weak()),
+                    .id_salt("plugin_browser_list")
+                    .auto_shrink([false, false])
+                    .min_scrolled_height(LIST_H)
+                    .max_height(LIST_H)
+                    .show_rows(ui, ROW_H, filtered.len(), |ui, rows| {
+                        let row_w = ui.available_width();
+                        for i in rows {
+                            let p = filtered[i];
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(row_w, ROW_H),
+                                egui::Sense::click(),
+                            );
+                            if resp.hovered() {
+                                ui.painter()
+                                    .rect_filled(rect, 5.0, super::theme::SURFACE_HI);
+                            }
+                            let mut row_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(rect.shrink2(egui::vec2(6.0, 0.0)))
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            );
+                            row_ui.add_sized(
+                                [36.0, ROW_H],
+                                egui::Label::new(
+                                    RichText::new(p.format())
+                                        .font(super::theme::mono(10.0))
+                                        .color(super::theme::SUBTLE),
+                                )
+                                .selectable(false),
+                            );
+                            let mut job = egui::text::LayoutJob::default();
+                            job.wrap.max_rows = 1;
+                            job.append(
+                                p.name(),
+                                0.0,
+                                egui::TextFormat::simple(
+                                    egui::FontId::proportional(13.0),
+                                    super::theme::INK,
+                                ),
+                            );
+                            if !p.vendor().is_empty() {
+                                job.append(
+                                    &format!("  ·  {}", p.vendor()),
+                                    0.0,
+                                    egui::TextFormat::simple(
+                                        egui::FontId::proportional(12.0),
+                                        super::theme::MUTED,
+                                    ),
                                 );
-                                let text = if p.vendor().is_empty() {
-                                    p.name().to_string()
-                                } else {
-                                    format!("{}  ·  {}", p.name(), p.vendor())
-                                };
-                                let resp = ui
-                                    .add(egui::Button::new(text).frame(false))
-                                    .on_hover_text(p.details());
-                                if resp.clicked() {
-                                    picked = Some(p.clone());
-                                }
-                            });
+                            }
+                            row_ui.add(egui::Label::new(job).truncate().selectable(false));
+                            let resp = resp.on_hover_text(p.details());
+                            if resp.clicked() {
+                                picked = Some(p.clone());
+                            }
                         }
                     });
             });
         if close || modal.should_close() || picked.is_some() {
             self.open = false;
+            self.was_open = false;
         }
         picked
     }
@@ -352,4 +452,127 @@ pub fn show_lv2(ui: &mut Ui, plugin: &mut Lv2Plugin) {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn fake_clap(name: &str, vendor: &str) -> Choice {
+        Choice::Clap(PluginInfo {
+            path: PathBuf::from("/tmp/test.clap"),
+            id: format!("org.test.{name}"),
+            name: name.to_string(),
+            vendor: vendor.to_string(),
+        })
+    }
+
+    fn fake_lv2(name: &str, author: &str) -> Choice {
+        Choice::Lv2(Lv2Info {
+            uri: format!("urn:test:{name}"),
+            name: name.to_string(),
+            author: author.to_string(),
+        })
+    }
+
+    #[test]
+    fn browser_multi_token_filter() {
+        let clap = fake_clap("LSP Gate Mono", "LSP CLAP");
+        let lv2 = fake_lv2("LSP Gate Mono", "LSP LV2");
+        assert!(clap.matches(""));
+        assert!(clap.matches("gate"));
+        assert!(clap.matches("clap gate"));
+        assert!(!clap.matches("lv2 gate"));
+        assert!(lv2.matches("lv2 gate"));
+        assert!(lv2.matches("lsp mono"));
+        assert!(!lv2.matches("compressor"));
+    }
+
+    #[test]
+    fn browser_modal_size_is_stable_across_filters() {
+        let ctx = egui::Context::default();
+        super::super::theme::install(&ctx);
+        let mut browser = Browser {
+            open: true,
+            plugins: Some(
+                (0..100)
+                    .map(|i| {
+                        fake_clap(
+                            &format!("Very Long Plugin Name Number {i} With Extra Technical Suffixes For Testing Width"),
+                            "Some Very Long Vendor Name Incorporated",
+                        )
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+
+        let run_frame = |b: &mut Browser| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1040.0, 700.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let _ = b.show(ui.ctx());
+            });
+            out.textures_delta.clear();
+            ctx.memory(|m| m.area_rect(egui::Id::new("add_plugin")))
+                .expect("modal area rect")
+        };
+
+        // settle two frames with 100 long-named plugins
+        run_frame(&mut browser);
+        let full = run_frame(&mut browser);
+        // width must not stretch past MODAL_W + frame margins (40px) + small slack
+        assert!(
+            full.width() <= MODAL_W + 48.0,
+            "modal stretched too wide: {}",
+            full.width()
+        );
+        // height must fit header + search + full 320px list (not collapsed to 2 rows)
+        assert!(
+            full.height() >= LIST_H + 100.0,
+            "modal list collapsed too short: {}",
+            full.height()
+        );
+
+        // narrow to 1 match: modal position and size should stay stable
+        browser.filter = "number 42".into();
+        run_frame(&mut browser);
+        let one = run_frame(&mut browser);
+        assert!(
+            (one.width() - full.width()).abs() < 2.0,
+            "width jumped: {} -> {}",
+            full.width(),
+            one.width()
+        );
+        assert!(
+            (one.height() - full.height()).abs() < 2.0,
+            "height jumped: {} -> {}",
+            full.height(),
+            one.height()
+        );
+
+        // narrow to 0 matches: modal stays stable
+        browser.filter = "zzzz-no-match".into();
+        run_frame(&mut browser);
+        let none = run_frame(&mut browser);
+        assert!(
+            (none.width() - full.width()).abs() < 2.0,
+            "width jumped on empty: {} -> {}",
+            full.width(),
+            none.width()
+        );
+        assert!(
+            (none.height() - full.height()).abs() < 2.0,
+            "height jumped on empty: {} -> {}",
+            full.height(),
+            none.height()
+        );
+    }
 }
