@@ -19,7 +19,7 @@ use super::knob::Knob;
 use super::theme::{self, DEEP, FAINT, GRID, INK, LINE, MUTED, SIGNAL, SURFACE};
 use crate::audio::SAMPLE_RATE;
 use crate::config::{AnalyzerMode, EqConfig};
-use crate::dsp::eq::{Band, EqParams, MAX_BANDS, default_bands};
+use crate::dsp::eq::{Band, EqParams, MAX_BANDS, PRESETS, default_bands};
 use crate::dsp::filter::{self, Phi, SLOPES, Shape};
 
 const F_MIN: f32 = 10.0;
@@ -1146,6 +1146,21 @@ impl EqView {
             {
                 params.output_gain.set(out);
             }
+            ui.add_space(10.0);
+            egui::ComboBox::from_id_salt("eq_presets")
+                .width(96.0)
+                .selected_text("Presets")
+                .show_ui(ui, |ui| {
+                    for preset in PRESETS {
+                        if ui
+                            .selectable_label(false, preset.name)
+                            .on_hover_text(preset.description)
+                            .clicked()
+                        {
+                            self.apply_bands(params, preset.bands());
+                        }
+                    }
+                });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let n = (0..MAX_BANDS).filter(|&k| params.band(k).is_some()).count();
                 ui.label(
@@ -1155,6 +1170,18 @@ impl EqView {
                 );
             });
         });
+    }
+
+    fn apply_bands(&mut self, params: &EqParams, bands: Vec<Band>) {
+        params.set_solo(None);
+        for k in 0..MAX_BANDS {
+            params.set_band(k, None);
+        }
+        for b in bands {
+            params.add_band(b);
+        }
+        params.output_gain.set(0.0);
+        self.selected = None;
     }
 
     /// undo, redo and reset, drawn in the panel header (right to left). the
@@ -1186,14 +1213,7 @@ impl EqView {
             Some(HeaderAction::Undo) => self.undo_redo(params, true),
             Some(HeaderAction::Redo) => self.undo_redo(params, false),
             Some(HeaderAction::Reset) => {
-                for k in 0..MAX_BANDS {
-                    params.set_band(k, None);
-                }
-                for b in default_bands() {
-                    params.add_band(b);
-                }
-                params.output_gain.set(0.0);
-                self.selected = None;
+                self.apply_bands(params, default_bands());
                 false
             }
             None => false,
