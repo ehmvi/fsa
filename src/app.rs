@@ -400,8 +400,19 @@ fn chain_row(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let missing = matches!(item.kind, ItemKind::Missing(_));
-                let index = RichText::new(format!("{:02}", i + 1)).font(theme::mono(10.5));
-                ui.label(index.color(if selected { SIGNAL } else { theme::SUBTLE }));
+                let index = RichText::new(format!("{:02}", i + 1))
+                    .font(theme::mono(10.5))
+                    .color(if selected { SIGNAL } else { theme::SUBTLE });
+                if ui
+                    .add(
+                        egui::Label::new(index)
+                            .sense(egui::Sense::click())
+                            .selectable(false),
+                    )
+                    .clicked()
+                {
+                    action = Some(RowAction::Select);
+                }
                 if ui
                     .add_enabled_ui(!missing, |ui| ui::on_off(ui, item.enabled()))
                     .inner
@@ -414,8 +425,16 @@ fn chain_row(
                     (false, true, false) => INK.gamma_multiply(0.88),
                     (false, false, _) => MUTED,
                 };
+                // span the remaining row width so clicking empty space still selects
+                let (rect, resp) =
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+                let mut label_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
                 let label = RichText::new(item.name()).size(13.5).color(color);
-                let resp = ui.add(egui::Button::new(label).frame(false).truncate());
+                label_ui.add(egui::Label::new(label).truncate().selectable(false));
                 if resp.on_hover_text(item.name()).clicked() {
                     action = Some(RowAction::Select);
                 }
@@ -870,21 +889,29 @@ impl App {
                     ui.add_space(6.0);
                 }
                 if !item.enabled() {
-                    ui::state_chip(ui, "BYPASSED", false)
-                        .on_hover_text("switch it on in the chain list");
+                    if matches!(item.kind, ItemKind::Missing(_)) {
+                        ui::state_chip(ui, "BYPASSED", false)
+                            .on_hover_text("plugin could not be loaded");
+                    } else if ui::chip(ui, "BYPASSED", false, 96.0, egui::Sense::click())
+                        .on_hover_text("click to enable")
+                        .clicked()
+                    {
+                        item.state.enabled.store(true, Ordering::Relaxed);
+                    }
                 }
             });
         });
         ui.add_space(10.0);
+        let active = item.enabled() && !self.shared.bypass.load(Ordering::Relaxed);
         match &mut item.kind {
             ItemKind::Eq => {
                 self.eq_view.show(ui, &self.eq);
             }
             ItemKind::Gate => {
-                ui::gate_view::show(ui, &self.gate);
+                ui::gate_view::show(ui, &self.gate, active);
             }
             ItemKind::Denoise => {
-                ui::denoise_view::show(ui, &self.denoise);
+                ui::denoise_view::show(ui, &self.denoise, active);
             }
             ItemKind::Plugin { plugin, .. } => {
                 if let Err(e) = ui::plugin_view::show(ui, plugin) {

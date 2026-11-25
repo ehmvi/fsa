@@ -9,7 +9,7 @@ use super::{
 };
 use crate::dsp::denoise::DenoiseParams;
 
-pub fn show(ui: &mut Ui, params: &DenoiseParams) {
+pub fn show(ui: &mut Ui, params: &DenoiseParams, active: bool) {
     let mut s = params.get();
     let before = s;
     ui.label(
@@ -17,15 +17,22 @@ pub fn show(ui: &mut Ui, params: &DenoiseParams) {
             .color(MUTED),
     );
     ui.add_space(20.0);
-    let vad = params.vad.get();
-    let open = s.vad_threshold <= 0.0 || vad >= s.vad_threshold;
-    let voice = vad >= s.vad_threshold.max(0.5);
+    let vad = if active { params.vad.get() } else { 0.0 };
+    let open = active && (s.vad_threshold <= 0.0 || vad >= s.vad_threshold);
+    let voice = active && vad >= s.vad_threshold.max(0.5);
+    let state_label = if !active {
+        "BYPASSED"
+    } else if voice {
+        "VOICE"
+    } else {
+        "NO VOICE"
+    };
     panel_well().show(ui, |ui| {
         ui.set_width(ui.available_width());
         let marker = (s.vad_threshold > 0.0).then_some(s.vad_threshold);
         status_strip(
             ui,
-            if voice { "VOICE" } else { "NO VOICE" },
+            state_label,
             voice,
             (vad, marker, open),
             &format!("{:.0} %", vad * 100.0),

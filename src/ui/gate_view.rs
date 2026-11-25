@@ -13,18 +13,27 @@ use crate::dsp::lin_to_db;
 const FLOOR_DB: f32 = -80.0;
 
 /// returns true if any parameter changed
-pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
+pub fn show(ui: &mut Ui, params: &GateParams, active: bool) -> bool {
     let mut s = params.get();
     let before = s;
-    let open = params.open.load(Ordering::Relaxed);
+    let open = active && params.open.load(Ordering::Relaxed);
 
     // detector level with a falling bar, kept between frames
     let id = ui.id().with("gate_level");
-    let peak = lin_to_db(params.level.take()).max(FLOOR_DB);
+    let raw_peak = params.level.take();
+    let peak = if active {
+        lin_to_db(raw_peak).max(FLOOR_DB)
+    } else {
+        FLOOR_DB
+    };
     let dt = ui.input(|i| i.stable_dt).min(0.1);
     let level = ui.data_mut(|d| {
         let l = d.get_temp_mut_or(id, FLOOR_DB);
-        *l = peak.max(*l - 30.0 * dt);
+        *l = if active {
+            peak.max(*l - 30.0 * dt)
+        } else {
+            FLOOR_DB
+        };
         *l
     });
 
@@ -41,9 +50,16 @@ pub fn show(ui: &mut Ui, params: &GateParams) -> bool {
         } else {
             format!("{level:.0} dB")
         };
+        let state_label = if !active {
+            "BYPASSED"
+        } else if open {
+            "OPEN"
+        } else {
+            "CLOSED"
+        };
         status_strip(
             ui,
-            if open { "OPEN" } else { "CLOSED" },
+            state_label,
             open,
             (t(level), Some(t(s.threshold_db)), open),
             &readout,
