@@ -216,6 +216,7 @@ enum RowAction {
     Move(usize, i32),
     Remove(usize),
     ToggleEditor(usize),
+    ClearEqSolo,
 }
 
 /// display name of a device, or a "missing" marker
@@ -322,6 +323,7 @@ fn chain_row(
     i: usize,
     len: usize,
     selected: bool,
+    eq_solo: bool,
 ) -> Option<RowAction> {
     let mut action = None;
     // buttons first (right to left) so the name truncates in the space that's left
@@ -366,6 +368,22 @@ fn chain_row(
                     .clicked()
             {
                 action = Some(RowAction::Move(i, -1));
+            }
+            if matches!(item.kind, ItemKind::Eq) && eq_solo {
+                let resp = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("SOLO").font(theme::mono(9.5)).color(SIGNAL),
+                        )
+                        .fill(SIGNAL.gamma_multiply(0.14))
+                        .stroke(Stroke::new(1.0, SIGNAL.gamma_multiply(0.45)))
+                        .corner_radius(egui::CornerRadius::same(10))
+                        .min_size(egui::vec2(0.0, 18.0)),
+                    )
+                    .on_hover_text("an EQ band is soloed — click to clear");
+                if resp.clicked() {
+                    action = Some(RowAction::ClearEqSolo);
+                }
             }
             if let ItemKind::Plugin { plugin, .. } = &item.kind
                 && plugin.has_editor()
@@ -742,6 +760,7 @@ impl App {
         ui.add_space(4.0);
         let mut action = None;
         let len = self.chain.len();
+        let eq_solo = self.eq.solo().is_some();
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 48.0)
             .show(ui, |ui| {
@@ -762,7 +781,7 @@ impl App {
                     {
                         let ui = &mut frame.content_ui;
                         ui.set_width(ui.available_width());
-                        if let Some(a) = chain_row(ui, item, i, len, selected) {
+                        if let Some(a) = chain_row(ui, item, i, len, selected, eq_solo) {
                             match a {
                                 RowAction::Select => self.selected = Some(item.id),
                                 other => action = Some(other),
@@ -825,6 +844,7 @@ impl App {
                     }
                 }
             }
+            Some(RowAction::ClearEqSolo) => self.eq.set_solo(None),
             Some(RowAction::Select) | None => {}
         }
     }

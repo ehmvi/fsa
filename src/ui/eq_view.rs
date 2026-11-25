@@ -508,13 +508,25 @@ impl EqView {
             );
         }
         if let Some(s) = params.solo() {
-            painter.text(
-                rect.right_top() + vec2(-8.0, 6.0),
-                egui::Align2::RIGHT_TOP,
-                format!("SOLO BAND {}", s + 1),
-                theme::mono(11.0),
-                SIGNAL,
+            // sit left of the "dB" axis label at right_top() + (-4, 5)
+            let galley =
+                painter.layout_no_wrap(format!("SOLO BAND {}", s + 1), theme::mono(10.5), SIGNAL);
+            let pad = vec2(7.0, 2.5);
+            let pill = Rect::from_min_size(
+                pos2(
+                    rect.right() - 28.0 - galley.size().x - pad.x * 2.0,
+                    rect.top() + 5.0,
+                ),
+                galley.size() + pad * 2.0,
             );
+            painter.rect(
+                pill,
+                pill.height() * 0.5,
+                DEEP.gamma_multiply(0.9),
+                Stroke::new(1.0, SIGNAL.gamma_multiply(0.55)),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(pill.min + pad, galley, SIGNAL);
         }
         if bands.iter().all(Option::is_none) {
             painter.text(
