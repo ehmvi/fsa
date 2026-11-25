@@ -1034,16 +1034,44 @@ impl eframe::App for App {
                     let (r, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
                     ui.painter().circle_filled(r.center(), 3.5, dot);
                     ui.label(RichText::new(status).font(theme::mono(11.0)).color(MUTED));
-                    let xruns = self.shared.xruns.load(Ordering::Relaxed);
-                    if xruns > 0 {
+                    let latency_ms = if !self.shared.bypass.load(Ordering::Relaxed)
+                        && self
+                            .chain
+                            .iter()
+                            .any(|c| matches!(c.kind, ItemKind::Denoise) && c.enabled())
+                    {
+                        20
+                    } else {
+                        0
+                    };
+                    if latency_ms > 0 {
                         ui.label(
-                            RichText::new(format!(
-                                "· {xruns} underrun{}",
-                                if xruns == 1 { "" } else { "s" }
-                            ))
-                            .font(theme::mono(11.0))
-                            .color(SIGNAL),
-                        );
+                            RichText::new(format!("· {latency_ms} ms latency"))
+                                .font(theme::mono(11.0))
+                                .color(theme::SUBTLE),
+                        )
+                        .on_hover_text("fixed processing latency added by Noise suppression");
+                    }
+                    let xruns = self.shared.xruns.load(Ordering::Relaxed);
+                    if xruns > 0
+                        && ui
+                            .add(
+                                egui::Label::new(
+                                    RichText::new(format!(
+                                        "· {xruns} underrun{}",
+                                        if xruns == 1 { "" } else { "s" }
+                                    ))
+                                    .font(theme::mono(11.0))
+                                    .color(SIGNAL),
+                                )
+                                .sense(egui::Sense::click())
+                                .selectable(false),
+                            )
+                            .on_hover_text("audio buffer underruns — click to clear")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                    {
+                        self.shared.xruns.store(0, Ordering::Relaxed);
                     }
                     if let Some(err) = &self.error {
                         ui.label(RichText::new(err).font(theme::mono(11.0)).color(ALERT));
