@@ -1,6 +1,6 @@
 # Equalizer
 
-The equalizer shapes the mic's tone with up to 24 bands, drawn as a response curve over a spectrum analyzer. A fresh config has one band: a low cut at 80 Hz. Double-clicking the graph adds a band, dragging a node moves it, scrolling over a node changes its Q, and right-clicking offers every shape. Undo, Redo and Reset sit above the graph, and Analyzer, Range and Output sit below it.
+The equalizer shapes the mic's tone with up to 24 bands, drawn as a response curve over a spectrum analyzer. A fresh config has one band: a low cut at 80 Hz. Double-clicking the graph adds a band, dragging a node moves it, scrolling over a node changes its Q, right-clicking offers every shape, and `s` solos the selected band. Presets, Undo, Redo and Reset sit above the graph, and Analyzer, Range and Output sit below it.
 
 ## Sub-features
 
@@ -31,6 +31,6 @@ Preconditions:
 
 - Positions on the graph are logarithmic: 20 Hz at x=340, 100 Hz at 466, 1 kHz at 647, 10 kHz at 829. Convert with x = 647 + 181 * log10(f / 1000).
 - The 0 dB line is y=279 at the default ±12 dB range. Changing RANGE rescales the y axis.
-- Double-clicking an existing node resets that band instead of adding one. Add new bands away from existing nodes.
+- Double-clicking an existing node toggles bypass on that band instead of adding one. Add new bands away from existing nodes.
 - The analyzer only draws while signal flows, so take spectrum screenshots during `play-record`, not after it.
 - This recipe was mapped from the UI and the code when the skill was created but has not yet been run end to end. Confirm the coordinates and the expected numbers on the first run, and fix this file.

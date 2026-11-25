@@ -30,9 +30,10 @@ Each feature file starts with an H1 title and one paragraph on the user-visible 
 ## Features
 
 - [Virtual mic and global bypass](./virtual-mic.md): "Mic (processed)" carries the processed signal, and `ACTIVE`/`BYPASSED` toggles all processing.
+- [Noise suppression](./noise-suppression.md): RNNoise neural noise suppression, `STRENGTH` and `VOICE GATE` controls, and 20 ms latency readout.
 - [Noise gate](./noise-gate.md): mutes the mic between words, with a chain on/off switch, knobs and persistence. Proven end to end when this skill was created.
-- [Equalizer](./equalizer.md): the default low cut, and adding or shaping bands on the graph.
+- [Equalizer](./equalizer.md): the default low cut, voice presets, and adding or shaping bands on the graph.
 - [Input selection](./input-selection.md): the Input and Channel dropdowns, and the `--input`, `--channel` and `--list` options.
 - [Plugins](./plugins.md): Add plugin browser, CLAP/LV2 effects in the chain.
 
-Not mapped yet: noise suppression on its own (strength, voice gate), chain reordering (⏶ ⏷), EQ dynamics, analyzer modes, and macOS output selection.
+Not mapped yet: chain reordering (⏶ ⏷), EQ dynamics, analyzer modes, and macOS output selection.

@@ -33,7 +33,6 @@ Preconditions:
 - CLAP editors open as separate X11 windows with class `fsa-plugin`, on the same Xvfb display. `shot` only captures the main window. To capture the editor, run `DISPLAY=$(cat /tmp/fsa-verify/current/scratch/display) import -window root …` inside `nix shell --inputs-from . nixpkgs#imagemagick`.
 - The first `--plugins` run downloads lsp-plugins (about 100 MB).
 - LV2 hosting exists only on x86_64 Linux. `plugins/lv2/stub.rs` covers the other platforms.
-- The dialog is centred and sized by its content, so it moves and changes width when the filter changes. Take a `shot` before every click in it.
-- At 1040x700 the result list shows only two rows at a time. Narrow it with the search, or scroll over the list.
+- The dialog has a fixed width (460 px) and a fixed scrollable list height (320 px, ~10 rows visible) so it stays centered and does not resize as the search filter changes. The search box auto-focuses on open, and multi-token search filters by name, vendor, or format (`"lsp gate"`).
 - Only `Browse` and `Search` had been run when this skill was created. Fix the remaining steps on the first real run.
 - To test a full chain (32 items, the engine's `MAX_SLOTS`), start with a `--config` holding the three built-ins plus 29 `kind = "lv2"` entries with made-up URIs (`uri = "urn:fsa-verify:missing-01"` and so on). Each loads as a red missing item that still takes a slot. Repeating a built-in does not work, because `Config::normalize` keeps each one only once. With 32 items, `Add plugin` is greyed out and its tooltip reads `the chain is full (32 items); remove one to add another`. Removing one row with its 🗙 enables the button again. Rows past 11 need scrolling in the chain list.
