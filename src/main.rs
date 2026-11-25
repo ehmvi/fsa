@@ -9,6 +9,7 @@ mod ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{anyhow, bail};
 
@@ -17,9 +18,27 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::shared::{InputChannel, Shared};
 
+static HEADLESS_STOP: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+fn install_stop_signals() {
+    extern "C" fn handle(_: libc::c_int) {
+        HEADLESS_STOP.store(true, Ordering::Relaxed);
+    }
+    // safety: `handle` only performs an async-signal-safe atomic store
+    unsafe {
+        libc::signal(libc::SIGINT, handle as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handle as *const () as libc::sighandler_t);
+    }
+}
+
+#[cfg(not(unix))]
+fn install_stop_signals() {}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
     Run,
+    Headless,
     List,
     Help,
     Version,
@@ -64,6 +83,7 @@ where
                     .ok_or_else(|| anyhow!("--config expects a path"))?
                     .into()
             }
+            "--headless" => cli.mode = Mode::Headless,
             "--list" | "-l" => cli.mode = Mode::List,
             "--version" | "-V" => {
                 cli.mode = Mode::Version;
@@ -88,7 +108,7 @@ fn main() -> anyhow::Result<()> {
     match cli.mode {
         Mode::Help => {
             println!(
-                "usage: fsa [--input <node.name>|auto|default] [--channel left|right|mix] [--config <path>] [--list] [--version]\n\
+                "usage: fsa [--input <node.name>|auto|default] [--channel left|right|mix] [--config <path>] [--headless] [--list] [--version]\n\
                  settings are stored in {}",
                 config::default_path().display()
             );
@@ -104,7 +124,7 @@ fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Mode::Run => {}
+        Mode::Run | Mode::Headless => {}
     }
 
     let mut config = Config::load(&cli.config_path);
@@ -132,6 +152,21 @@ fn main() -> anyhow::Result<()> {
         config.picker(),
         config.output.clone(),
     )?;
+
+    if cli.mode == Mode::Headless {
+        HEADLESS_STOP.store(false, Ordering::Relaxed);
+        install_stop_signals();
+        App::new(
+            shared,
+            backend,
+            engine_handle,
+            setup,
+            config,
+            cli.config_path,
+        )
+        .run_headless(&HEADLESS_STOP);
+        return Ok(());
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -183,6 +218,7 @@ mod tests {
         assert_eq!(parse(&["--version"]).unwrap().mode, Mode::Version);
         assert_eq!(parse(&["-V"]).unwrap().mode, Mode::Version);
         assert_eq!(parse(&["--list"]).unwrap().mode, Mode::List);
+        assert_eq!(parse(&["--headless"]).unwrap().mode, Mode::Headless);
         assert_eq!(parse(&["--help"]).unwrap().mode, Mode::Help);
 
         let cli = parse(&["-i", "usb.mic", "-c", "left", "--config", "/tmp/a.toml"]).unwrap();

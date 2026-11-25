@@ -905,6 +905,23 @@ impl App {
         }
     }
 
+    /// runs audio processing and plugin housekeeping without a gui until `stop` is set
+    pub fn run_headless(mut self, stop: &std::sync::atomic::AtomicBool) {
+        log::info!("running headless (send SIGINT or SIGTERM to stop)");
+        while !stop.load(Ordering::Relaxed) {
+            self.collect_garbage();
+            self.poll_plugins();
+            self.autosave();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        log::info!("shutting down");
+        let snap = self.snapshot();
+        if snap != self.saved {
+            self.save(snap);
+        }
+        self.teardown_plugins();
+    }
+
     /// hands every plugin back to the main thread and deactivates it
     fn teardown_plugins(&mut self) {
         for i in (0..self.chain.len()).rev() {
