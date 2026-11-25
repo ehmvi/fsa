@@ -318,29 +318,32 @@ impl EqView {
             });
         ui.add_space(10.0);
         self.bottom_bar(ui, params);
-        self.apply_action(params);
+        let mut history_nav = self.apply_action(params);
         // the strip wraps on narrow windows; the graph gives way next frame
         let below = ui.cursor().top() - top + 4.0;
         if (below - self.below_graph).abs() > 0.5 {
             self.below_graph = below;
             ui.ctx().request_repaint();
         }
-        self.keys(ui, params);
+        history_nav |= self.keys(ui, params);
 
-        // group everything until the pointer is released into one undo step
+        // group everything until the pointer is released into one undo step,
+        // without re-recording states produced by undo/redo itself
         let after: Slots = std::array::from_fn(|i| params.band(i));
-        if after != before && self.gesture.is_none() {
-            self.gesture = Some(before);
-        }
-        if !ui.input(|i| i.pointer.any_down())
-            && let Some(g) = self.gesture.take()
-            && g != after
-        {
-            self.undo.push(g);
-            if self.undo.len() > UNDO_DEPTH {
-                self.undo.remove(0);
+        if !history_nav {
+            if after != before && self.gesture.is_none() {
+                self.gesture = Some(before);
             }
-            self.redo.clear();
+            if !ui.input(|i| i.pointer.any_down())
+                && let Some(g) = self.gesture.take()
+                && g != after
+            {
+                self.undo.push(g);
+                if self.undo.len() > UNDO_DEPTH {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+            }
         }
         after != before || view_before != (self.analyzer_mode, self.range, params.output_gain.get())
     }
@@ -1166,7 +1169,7 @@ impl EqView {
         }
     }
 
-    fn apply_action(&mut self, params: &EqParams) {
+    fn apply_action(&mut self, params: &EqParams) -> bool {
         match self.action.take() {
             Some(HeaderAction::Undo) => self.undo_redo(params, true),
             Some(HeaderAction::Redo) => self.undo_redo(params, false),
@@ -1179,15 +1182,16 @@ impl EqView {
                 }
                 params.output_gain.set(0.0);
                 self.selected = None;
+                false
             }
-            None => {}
+            None => false,
         }
     }
 
-    fn keys(&mut self, ui: &Ui, params: &EqParams) {
+    fn keys(&mut self, ui: &Ui, params: &EqParams) -> bool {
         // leave keys alone while a text field has focus
         if ui.ctx().memory(|m| m.focused().is_some()) {
-            return;
+            return false;
         }
         let (undo, redo, delete) = ui.input(|i| {
             let cmd = i.modifiers.command;
@@ -1197,23 +1201,28 @@ impl EqView {
                 i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
             )
         });
-        if undo {
-            self.undo_redo(params, true);
+        let history_nav = if undo {
+            self.undo_redo(params, true)
         } else if redo {
-            self.undo_redo(params, false);
-        }
+            self.undo_redo(params, false)
+        } else {
+            false
+        };
         if delete && let Some(i) = self.selected.take() {
             params.set_band(i, None);
         }
+        history_nav
     }
 
-    fn undo_redo(&mut self, params: &EqParams, undo: bool) {
+    fn undo_redo(&mut self, params: &EqParams, undo: bool) -> bool {
         let (from, to) = if undo {
             (&mut self.undo, &mut self.redo)
         } else {
             (&mut self.redo, &mut self.undo)
         };
-        let Some(state) = from.pop() else { return };
+        let Some(state) = from.pop() else {
+            return false;
+        };
         to.push(std::array::from_fn(|i| params.band(i)));
         for (i, b) in state.iter().enumerate() {
             if params.band(i) != *b {
@@ -1221,6 +1230,7 @@ impl EqView {
             }
         }
         self.gesture = None;
+        true
     }
 }
 
@@ -1413,6 +1423,67 @@ mod tests {
         h.click(edge);
         h.click(edge);
         assert!(h.params.snapshot().iter().any(|b| b.shape == Shape::LowCut));
+    }
+
+    #[test]
+    fn undo_redo_and_reset() {
+        let mut h = Harness::new(&default_bands());
+        // step 1: add a band at 1 kHz, +6 dB
+        let p = h.at(1000.0, 6.0);
+        h.click(p);
+        h.click(p);
+        assert_eq!(h.params.snapshot().len(), 2);
+
+        // step 2: drag it to 3 kHz, -4 dB
+        let b = h.params.band(1).unwrap();
+        let (from, to) = (h.at(b.freq, b.gain), h.at(3000.0, -4.0));
+        h.drag(from, to);
+        let dragged = h.params.band(1).unwrap();
+        assert!((dragged.freq / 3000.0 - 1.0).abs() < 0.05);
+        assert!((dragged.gain + 4.0).abs() < 0.4);
+
+        // undo step 2 (keyboard): back to 1 kHz, +6 dB, and redo is populated
+        h.key(egui::Key::Z, egui::Modifiers::COMMAND);
+        let after_undo1 = h.params.band(1).expect("band still present after 1st undo");
+        assert!((after_undo1.freq / 1000.0 - 1.0).abs() < 0.05);
+        assert!((after_undo1.gain - 6.0).abs() < 0.4);
+        assert!(
+            !h.view.redo.is_empty(),
+            "redo stack should hold undone step"
+        );
+
+        // undo step 1 (header action): back to single default low-cut band
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
+        assert_eq!(h.view.redo.len(), 2);
+
+        // redo step 1 (header action): restores 1 kHz, +6 dB band
+        h.view.action = Some(HeaderAction::Redo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 2);
+        let after_redo1 = h.params.band(1).unwrap();
+        assert!((after_redo1.freq / 1000.0 - 1.0).abs() < 0.05);
+
+        // redo step 2 (keyboard): restores 3 kHz, -4 dB band
+        h.key(
+            egui::Key::Z,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        );
+        let after_redo2 = h.params.band(1).unwrap();
+        assert!((after_redo2.freq / 3000.0 - 1.0).abs() < 0.05);
+        assert!((after_redo2.gain + 4.0).abs() < 0.4);
+
+        // reset via header action is undoable
+        h.view.action = Some(HeaderAction::Reset);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 1);
+        assert!(h.view.redo.is_empty());
+
+        h.view.action = Some(HeaderAction::Undo);
+        h.frame(vec![]);
+        assert_eq!(h.params.snapshot().len(), 2);
+        assert!((h.params.band(1).unwrap().freq / 3000.0 - 1.0).abs() < 0.05);
     }
 
     #[test]
