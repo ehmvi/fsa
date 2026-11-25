@@ -204,6 +204,41 @@ enum MenuTarget {
     Empty { freq: f32, gain: f32 },
 }
 
+struct GraphGrid {
+    left: f32,
+    width: f32,
+    xs: Vec<f32>,
+    freqs: Vec<f32>,
+    phis: Vec<Phi>,
+}
+
+impl GraphGrid {
+    fn new() -> Self {
+        Self {
+            left: f32::NAN,
+            width: f32::NAN,
+            xs: Vec::new(),
+            freqs: Vec::new(),
+            phis: Vec::new(),
+        }
+    }
+
+    fn update(&mut self, rect: Rect, fs: f32) {
+        if self.left == rect.left() && self.width == rect.width() && !self.xs.is_empty() {
+            return;
+        }
+        self.left = rect.left();
+        self.width = rect.width();
+        // columns: one per two pixels
+        let cols = ((rect.width() / 2.0) as usize).max(2);
+        self.xs = (0..=cols)
+            .map(|c| rect.left() + c as f32 * rect.width() / cols as f32)
+            .collect();
+        self.freqs = self.xs.iter().map(|&x| f_of(rect, x)).collect();
+        self.phis = self.freqs.iter().map(|&f| Phi::at(f, fs)).collect();
+    }
+}
+
 pub struct EqView {
     pub analyzer_mode: AnalyzerMode,
     /// +- db of the graph
@@ -221,6 +256,8 @@ pub struct EqView {
     below_graph: f32,
     /// where the graph was drawn last frame
     graph_rect: Rect,
+    /// cached x/freq/Phi columns for the current graph width
+    graph_grid: GraphGrid,
     /// a header button clicked this frame, applied by the next `show`
     action: Option<HeaderAction>,
 }
@@ -251,6 +288,7 @@ impl EqView {
             gesture: None,
             below_graph: 140.0,
             graph_rect: Rect::NOTHING,
+            graph_grid: GraphGrid::new(),
             action: None,
         }
     }
@@ -361,14 +399,7 @@ impl EqView {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 10.0, DEEP);
 
-        // columns: one per two pixels
-        let cols = ((rect.width() / 2.0) as usize).max(2);
-        let xs: Vec<f32> = (0..=cols)
-            .map(|c| rect.left() + c as f32 * rect.width() / cols as f32)
-            .collect();
-        let freqs: Vec<f32> = xs.iter().map(|&x| f_of(rect, x)).collect();
-        let phis: Vec<Phi> = freqs.iter().map(|&f| Phi::at(f, fs)).collect();
-
+        self.graph_grid.update(rect, fs);
         self.grid(&painter, &ui.painter().clone(), rect);
 
         // analyzer
@@ -383,7 +414,8 @@ impl EqView {
             AnalyzerMode::PrePost => (true, true),
         };
         if show_pre {
-            self.analyzer.update(false, params, &freqs, dt);
+            self.analyzer
+                .update(false, params, &self.graph_grid.freqs, dt);
             let ys: Vec<f32> = self
                 .analyzer
                 .pre
@@ -393,14 +425,15 @@ impl EqView {
                 .collect();
             fill_between(
                 &painter,
-                &xs,
+                &self.graph_grid.xs,
                 &ys,
                 |_| rect.bottom(),
                 INK.gamma_multiply(0.04),
             );
         }
         if show_post {
-            self.analyzer.update(true, params, &freqs, dt);
+            self.analyzer
+                .update(true, params, &self.graph_grid.freqs, dt);
             let ys: Vec<f32> = self
                 .analyzer
                 .post
@@ -410,12 +443,18 @@ impl EqView {
                 .collect();
             fill_between(
                 &painter,
-                &xs,
+                &self.graph_grid.xs,
                 &ys,
                 |_| rect.bottom(),
                 INK.gamma_multiply(0.07),
             );
-            let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
+            let line: Vec<Pos2> = self
+                .graph_grid
+                .xs
+                .iter()
+                .zip(&ys)
+                .map(|(&x, &y)| pos2(x, y))
+                .collect();
             painter.add(egui::Shape::line(
                 line,
                 Stroke::new(1.0, INK.gamma_multiply(0.2)),
@@ -425,6 +464,8 @@ impl EqView {
         // per-band curves as heard (dynamic bands at their current gain)
         let hover = resp.hover_pos();
         let hit = hover.and_then(|p| self.hit(rect, bands, p));
+        let xs = &self.graph_grid.xs;
+        let phis = &self.graph_grid.phis;
         let mut total = vec![0.0f32; xs.len()];
         let y0 = self.y_of(rect, 0.0);
         let clamp = |db: f32| db.clamp(-self.range * 1.6, self.range * 1.6);
@@ -449,7 +490,7 @@ impl EqView {
             }
             let color = if b.on { SIGNAL } else { FAINT };
             let ys: Vec<f32> = curve.iter().map(|&c| self.y_of(rect, clamp(c))).collect();
-            fill_between(&painter, &xs, &ys, |_| y0, color.gamma_multiply(0.14));
+            fill_between(&painter, xs, &ys, |_| y0, color.gamma_multiply(0.14));
             let line: Vec<Pos2> = xs.iter().zip(&ys).map(|(&x, &y)| pos2(x, y)).collect();
             painter.add(egui::Shape::dashed_line(
                 &line,
@@ -469,14 +510,14 @@ impl EqView {
                     .iter()
                     .map(|p| self.y_of(rect, clamp(hi.magnitude_db(p))))
                     .collect();
-                fill_between(&painter, &xs, &ya, |c| yb[c], color.gamma_multiply(0.12));
+                fill_between(&painter, xs, &ya, |c| yb[c], color.gamma_multiply(0.12));
             }
         }
         let ys: Vec<f32> = total.iter().map(|&db| self.y_of(rect, clamp(db))).collect();
         // cuts fade out towards the bottom so a low cut does not paint a slab
         fill_fading(
             &painter,
-            &xs,
+            xs,
             &ys,
             y0,
             rect.bottom(),
