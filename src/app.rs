@@ -755,7 +755,7 @@ impl App {
                 let bypass = self.shared.bypass.load(Ordering::Relaxed);
                 let text = if bypass { "BYPASSED" } else { "ACTIVE" };
                 if ui::chip(ui, text, !bypass, 104.0, egui::Sense::click())
-                    .on_hover_text("global bypass: output = raw input")
+                    .on_hover_text("global bypass: output = raw input (ctrl/cmd+b)")
                     .clicked()
                 {
                     self.shared.bypass.store(!bypass, Ordering::Relaxed);
@@ -905,7 +905,7 @@ impl App {
         let active = item.enabled() && !self.shared.bypass.load(Ordering::Relaxed);
         match &mut item.kind {
             ItemKind::Eq => {
-                self.eq_view.show(ui, &self.eq);
+                self.eq_view.show(ui, &self.eq, !self.browser.open);
             }
             ItemKind::Gate => {
                 ui::gate_view::show(ui, &self.gate, active);
@@ -992,6 +992,15 @@ impl eframe::App for App {
             self.browser.run_pending_scan(host);
         }
         let editor_open = self.poll_plugins();
+
+        if !self.browser.open
+            && !ui::knob::other_widget_focused(ui.ctx())
+            && ui
+                .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::B))
+        {
+            let bypass = self.shared.bypass.load(Ordering::Relaxed);
+            self.shared.bypass.store(!bypass, Ordering::Relaxed);
+        }
 
         let bar = egui::Frame::new()
             .fill(theme::BG)

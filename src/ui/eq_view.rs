@@ -5,8 +5,8 @@
 //! graph: double-click to add a band (near the edges: cuts), drag a node
 //! to move it (shift: fine; vertical drag on cuts, notches and band
 //! passes changes q), scroll over a node for q, double-click a node to
-//! bypass it, right-click for its menu, delete/backspace removes the
-//! selected band. ctrl/cmd+z undoes, shift+ctrl/cmd+z redoes.
+//! bypass it, right-click for its menu, s solos the selected band,
+//! delete/backspace removes it. ctrl/cmd+z undoes, shift+ctrl/cmd+z redoes.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -280,7 +280,7 @@ impl EqView {
     }
 
     /// returns true if anything that belongs in the config changed
-    pub fn show(&mut self, ui: &mut Ui, params: &EqParams) -> bool {
+    pub fn show(&mut self, ui: &mut Ui, params: &EqParams, keys_enabled: bool) -> bool {
         let before: Slots = std::array::from_fn(|i| params.band(i));
         let view_before = (self.analyzer_mode, self.range, params.output_gain.get());
         params.analyzer.store(
@@ -326,7 +326,7 @@ impl EqView {
             self.below_graph = below;
             ui.ctx().request_repaint();
         }
-        history_nav |= self.keys(ui, params);
+        history_nav |= self.keys(ui, params, keys_enabled);
 
         // group everything until the pointer is released into one undo step,
         // without re-recording states produced by undo/redo itself
@@ -973,9 +973,20 @@ impl EqView {
                 .filter(|&k| params.band(k).is_some())
                 .collect();
             let at = used.iter().position(|&k| k == i).unwrap_or(0);
-            let arrow =
-                |t: &str| egui::Button::new(RichText::new(t).size(10.0).color(MUTED)).frame(false);
-            if ui.add(arrow("◀")).on_hover_text("previous band").clicked() {
+            let multi = used.len() > 1;
+            let arrow = |t: &str| {
+                egui::Button::new(RichText::new(t).size(10.0).color(if multi {
+                    MUTED
+                } else {
+                    FAINT
+                }))
+                .frame(false)
+            };
+            if ui
+                .add_enabled(multi, arrow("◀"))
+                .on_hover_text("previous band")
+                .clicked()
+            {
                 self.selected = Some(used[(at + used.len() - 1) % used.len()]);
             }
             ui.label(
@@ -983,7 +994,11 @@ impl EqView {
                     .font(theme::mono(11.5))
                     .color(color),
             );
-            if ui.add(arrow("▶")).on_hover_text("next band").clicked() {
+            if ui
+                .add_enabled(multi, arrow("▶"))
+                .on_hover_text("next band")
+                .clicked()
+            {
                 self.selected = Some(used[(at + 1) % used.len()]);
             }
             ui.add_space(6.0);
@@ -1015,7 +1030,7 @@ impl EqView {
                 }
                 let solo = params.solo() == Some(i);
                 if super::ghost_toggle(ui, "Solo", solo, true)
-                    .on_hover_text("listen to this band's region only")
+                    .on_hover_text("listen to this band's region only (s)")
                     .clicked()
                 {
                     params.set_solo((!solo).then_some(i));
@@ -1226,17 +1241,18 @@ impl EqView {
         }
     }
 
-    fn keys(&mut self, ui: &Ui, params: &EqParams) -> bool {
-        // leave keys alone while a text field has focus
-        if ui.ctx().memory(|m| m.focused().is_some()) {
+    fn keys(&mut self, ui: &Ui, params: &EqParams, enabled: bool) -> bool {
+        // leave keys alone while a modal or text field has focus
+        if !enabled || super::knob::other_widget_focused(ui.ctx()) {
             return false;
         }
-        let (undo, redo, delete) = ui.input(|i| {
+        let (undo, redo, delete, solo) = ui.input(|i| {
             let cmd = i.modifiers.command;
             (
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z),
                 i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+                !i.modifiers.any() && i.key_pressed(egui::Key::S),
             )
         });
         let history_nav = if undo {
@@ -1246,6 +1262,9 @@ impl EqView {
         } else {
             false
         };
+        if solo && let Some(i) = self.selected {
+            params.set_solo((params.solo() != Some(i)).then_some(i));
+        }
         if delete && let Some(i) = self.selected.take() {
             params.set_band(i, None);
         }
@@ -1337,6 +1356,7 @@ mod tests {
         view: EqView,
         params: Arc<EqParams>,
         time: f64,
+        keys_enabled: bool,
     }
 
     impl Harness {
@@ -1346,6 +1366,7 @@ mod tests {
                 view: EqView::new(&EqConfig::default()),
                 params: Arc::new(EqParams::new(bands, 0.0)),
                 time: 0.0,
+                keys_enabled: true,
             };
             h.frame(vec![]);
             h.frame(vec![]);
@@ -1360,9 +1381,9 @@ mod tests {
                 ..Default::default()
             };
             self.time += 1.0 / 60.0;
-            let (view, params) = (&mut self.view, &self.params);
+            let (view, params, keys_enabled) = (&mut self.view, &self.params, self.keys_enabled);
             let mut out = self.ctx.run_ui(input, |ui| {
-                view.show(ui, params);
+                view.show(ui, params, keys_enabled);
             });
             out.textures_delta.clear();
         }
@@ -1543,6 +1564,28 @@ mod tests {
         h.view.action = Some(HeaderAction::Undo);
         h.frame(vec![]);
         assert_eq!(h.params.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn solo_shortcut_and_modal_key_guard() {
+        let mut h = Harness::new(&default_bands());
+        // select band 0
+        let b = h.params.band(0).unwrap();
+        h.click(h.at(b.freq, 0.0));
+        assert_eq!(h.view.selected, Some(0));
+
+        // s toggles solo on the selected band
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), Some(0));
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), None);
+
+        // when a modal is open (keys_enabled = false), s and delete do nothing
+        h.keys_enabled = false;
+        h.key(egui::Key::S, egui::Modifiers::NONE);
+        assert_eq!(h.params.solo(), None);
+        h.key(egui::Key::Delete, egui::Modifiers::NONE);
+        assert!(h.params.band(0).is_some());
     }
 
     #[test]
